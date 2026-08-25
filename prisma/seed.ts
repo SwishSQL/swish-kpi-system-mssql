@@ -6,9 +6,24 @@
  * - Creates the initial admin user when no admin exists
  * - Opens the current submission month when missing
  */
+import fs from 'fs';
+import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { PERMISSIONS, DEFAULT_ROLE_PERMISSIONS, SystemRole } from '../src/lib/permissions';
+
+// The Prisma CLI and Next.js load .env themselves, but running this file
+// directly (`npx tsx prisma/seed.ts`) does not - read it here so the seed
+// works standalone without depending on the dotenv package or Node version.
+if (!process.env.DATABASE_URL) {
+  const envPath = path.join(__dirname, '..', '.env');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+    }
+  }
+}
 
 const db = new PrismaClient();
 
