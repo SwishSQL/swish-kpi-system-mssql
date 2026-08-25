@@ -1,0 +1,394 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+// Microsoft SQL Server port of the SWiSH KPI system.
+//
+// Differences from the PostgreSQL original, forced by the provider:
+//   - No native enums: every enum column is a String holding the same
+//     uppercase values (SystemRole, SubmissionStatus, ApprovalStage, ...).
+//     The TypeScript layer already treats them as string unions, so the
+//     application code is unchanged.
+//   - No Json type: AuditLog.oldValues/newValues and ImportJob.errorReport/
+//     summary are NVarChar(Max) holding JSON text; src/lib/audit.ts and the
+//     import routes stringify on write and parse on read.
+//   - SQL Server refuses a table reachable by more than one cascade path and
+//     any action on a self-referencing FK, so several relations that cascaded
+//     in Postgres are NoAction here; the places that delete those parents
+//     already delete or guard the children explicitly in application code.
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  employeeId          String    @unique
+  fullName            String
+  email               String    @unique
+  passwordHash        String
+  // SUPER_ADMIN | ADMIN | COMPLIANCE_SPECIALIST | HR_ADMIN | EMPLOYEE
+  systemRole          String    @default("EMPLOYEE")
+  mustChangePassword  Boolean   @default(true)
+  isActive            Boolean   @default(true)
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  employeeProfile     EmployeeProfile?
+  sessions            Session[]
+  permissionOverrides UserPermissionOverride[]
+  submissionsMade     KpiSubmission[]          @relation("SubmittedBy")
+  attachmentsUploaded Attachment[]
+  approvalsSubmitted  SubmissionApproval[]     @relation("ApprovalSubmittedBy")
+  approvalsAsLineManager       SubmissionApproval[] @relation("ApprovalLineManager")
+  approvalsAsDepartmentManager SubmissionApproval[] @relation("ApprovalDepartmentManager")
+  approvalsAsCompliance        SubmissionApproval[] @relation("ApprovalCompliance")
+  approvalEvents      ApprovalEvent[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  importJobs          ImportJob[]
+
+  @@index([email])
+  @@index([isActive])
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  code        String @unique
+  name        String
+  description String @default("")
+
+  rolePermissions RolePermission[]
+  userOverrides   UserPermissionOverride[]
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  // Same values as User.systemRole.
+  role         String
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([role, permissionId])
+}
+
+model UserPermissionOverride {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String
+  // NoAction: User -> UserPermissionOverride already cascades, and SQL Server
+  // refuses a second cascading path into the same table.
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  allowed      Boolean
+
+  @@unique([userId, permissionId])
+}
+
+model Department {
+  id                          String  @id @default(cuid())
+  code                        String  @unique
+  name                        String  @unique
+  departmentManagerEmployeeId String?
+  isActive                    Boolean @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  employees EmployeeProfile[]
+  kpis      Kpi[]
+}
+
+model EmployeeProfile {
+  id                      String    @id @default(cuid())
+  userId                  String?   @unique
+  user                    User?     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employeeId              String    @unique
+  fullName                String
+  departmentId            String?
+  department              Department? @relation(fields: [departmentId], references: [id])
+  position                String?
+  perspective             String?
+  dateOfHiring            DateTime?
+  directManagerEmployeeId String?
+  // Self-referencing FK: SQL Server allows no referential action here at all.
+  directManager           EmployeeProfile?  @relation("Reports", fields: [directManagerEmployeeId], references: [employeeId], onDelete: NoAction, onUpdate: NoAction)
+  reports                 EmployeeProfile[] @relation("Reports")
+  crossDepartmentOverride Boolean   @default(false)
+  isActive                Boolean   @default(true)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  assignments KpiAssignment[]
+  submissions KpiSubmission[]
+  approvals   SubmissionApproval[]
+
+  @@index([departmentId])
+  @@index([directManagerEmployeeId])
+  @@index([isActive])
+}
+
+model Kpi {
+  id                      String            @id @default(cuid())
+  kpiCode                 String            @unique
+  kpiName                 String
+  description             String            @default("") @db.NVarChar(Max)
+  calculationMethod       String            @default("") @db.NVarChar(Max)
+  // U | D
+  varianceIndicator       String            @default("U")
+  matrix                  String            @default("")
+  defaultTarget           Float?
+  // The library states many targets as prose - ">=95% accuracy & timeliness",
+  // "Target per region" - which no numeric column can hold. Kept verbatim so
+  // the KPI Library screen reads exactly like the source workbook.
+  targetText              String            @default("")
+  defaultThreshold        Float?
+  defaultWeight           Float?
+  frequency               String            @default("Monthly")
+  // Ownership is often shared ("Central Kitchen / HR") and 117 such labels are
+  // not departments in their own right, so the wording is stored as written and
+  // the relation is linked only when a real department matches by name.
+  responsibleDepartmentText String          @default("")
+  responsibleDepartmentId String?
+  responsibleDepartment   Department?       @relation(fields: [responsibleDepartmentId], references: [id])
+  formOfSubmission        String            @default("") @db.NVarChar(Max)
+  scoreCap                Float             @default(100)
+  zeroActualIsPerfect     Boolean           @default(false)
+  isActive                Boolean           @default(true)
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+
+  assignments KpiAssignment[]
+}
+
+model KpiAssignment {
+  id                String   @id @default(cuid())
+  employeeProfileId String
+  employee          EmployeeProfile @relation(fields: [employeeProfileId], references: [id], onDelete: Cascade)
+  kpiId             String
+  kpi               Kpi      @relation(fields: [kpiId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  year              Int
+  target            Float
+  threshold         Float
+  weight            Float
+  frequency         String   @default("Monthly")
+  formOfSubmission  String   @default("")
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  submissions KpiSubmission[]
+
+  @@unique([employeeProfileId, kpiId, year, effectiveFrom])
+  @@index([employeeProfileId, year, isActive])
+  @@index([kpiId])
+}
+
+model SubmissionPeriod {
+  id                String       @id @default(cuid())
+  month             Int
+  year              Int
+  // OPEN | CLOSED | LOCKED
+  status            String       @default("OPEN")
+  opensAt           DateTime?
+  deadlineAt        DateTime?
+  gracePeriodEndsAt DateTime?
+  lockedAt          DateTime?
+  reopenedAt        DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([year, month])
+}
+
+model KpiSubmission {
+  id                          String            @id @default(cuid())
+  employeeProfileId           String
+  // NoAction: EmployeeProfile already reaches this table through
+  // KpiAssignment's cascade, and SQL Server refuses the second path. The
+  // employee-delete route refuses profiles with submissions anyway.
+  employee                    EmployeeProfile   @relation(fields: [employeeProfileId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  kpiAssignmentId             String
+  kpiAssignment               KpiAssignment     @relation(fields: [kpiAssignmentId], references: [id], onDelete: Cascade)
+  submissionMonth             String // "YYYY-MM"
+  actualResult                Float
+  rawSourceValue              String?
+  normalizedActualResult      Float
+  calculatedScore             Float
+  weightedScore               Float
+  // NOT_STARTED | DRAFT | SUBMITTED | UPDATED | LOCKED | REJECTED | REOPENED
+  submissionStatus            String            @default("SUBMITTED")
+  // TARGET_ACHIEVED | BETWEEN_TARGET_AND_THRESHOLD | BELOW_THRESHOLD
+  performanceStatus           String
+  comment                     String            @default("") @db.NVarChar(Max)
+  submittedByUserId           String?
+  submittedBy                 User?             @relation("SubmittedBy", fields: [submittedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  submittedOnBehalfOfEmployee Boolean           @default(false)
+  version                     Int               @default(1)
+  idempotencyKey              String?
+  submittedAt                 DateTime          @default(now())
+  updatedAt                   DateTime          @updatedAt
+  lockedAt                    DateTime?
+  createdAt                   DateTime          @default(now())
+
+  attachments Attachment[]
+
+  @@unique([kpiAssignmentId, submissionMonth])
+  @@index([employeeProfileId, submissionMonth])
+  @@index([submissionMonth])
+}
+
+model SubmissionApproval {
+  id                String        @id @default(cuid())
+  employeeProfileId String
+  employee          EmployeeProfile @relation(fields: [employeeProfileId], references: [id], onDelete: Cascade)
+  submissionMonth   String // "YYYY-MM"
+  // PENDING_LINE_MANAGER | PENDING_DEPARTMENT_MANAGER | PENDING_COMPLIANCE | APPROVED
+  stage             String        @default("PENDING_LINE_MANAGER")
+
+  // All four User relations are NoAction: four FK columns into one table is
+  // four referential-action paths from User, which SQL Server refuses.
+  submittedByUserId String?
+  submittedBy       User?     @relation("ApprovalSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  submittedAt       DateTime  @default(now())
+
+  lineManagerUserId String?
+  lineManager       User?     @relation("ApprovalLineManager", fields: [lineManagerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  lineManagerAt     DateTime?
+
+  departmentManagerUserId String?
+  departmentManager       User?     @relation("ApprovalDepartmentManager", fields: [departmentManagerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  departmentManagerAt     DateTime?
+
+  complianceUserId String?
+  compliance       User?     @relation("ApprovalCompliance", fields: [complianceUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  complianceAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events ApprovalEvent[]
+
+  @@unique([employeeProfileId, submissionMonth])
+  @@index([stage])
+  @@index([submissionMonth])
+}
+
+model ApprovalEvent {
+  id         String             @id @default(cuid())
+  approvalId String
+  approval   SubmissionApproval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  action     String // SUBMITTED | APPROVED | VALUES_EDITED
+  // Same values as SubmissionApproval.stage.
+  stage      String
+  userId     String?
+  user       User?              @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  comment    String             @default("") @db.NVarChar(Max)
+  createdAt  DateTime           @default(now())
+
+  @@index([approvalId])
+}
+
+model Attachment {
+  id               String        @id @default(cuid())
+  submissionId     String
+  submission       KpiSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  originalFileName String
+  storageKey       String        @unique
+  fileUrl          String?
+  mimeType         String
+  fileSize         Int
+  checksum         String
+  data             Bytes?
+  uploadedByUserId String?
+  uploadedBy       User?         @relation(fields: [uploadedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploadedAt       DateTime      @default(now())
+
+  @@unique([submissionId, checksum])
+  @@index([submissionId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  action     String
+  entityType String
+  entityId   String?
+  // JSON text - SQL Server has no Prisma Json type. Written by logAudit
+  // (JSON.stringify) and parsed by the audit-log reader.
+  oldValues  String?  @db.NVarChar(Max)
+  newValues  String?  @db.NVarChar(Max)
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model ImportJob {
+  id                String       @id @default(cuid())
+  fileName          String
+  importType        String
+  workbookSheetName String
+  // PENDING | VALIDATING | READY | RUNNING | COMPLETED | FAILED | CANCELLED
+  status            String       @default("PENDING")
+  totalRows         Int          @default(0)
+  validRows         Int          @default(0)
+  failedRows        Int          @default(0)
+  // JSON text - see AuditLog.
+  errorReport       String?      @db.NVarChar(Max)
+  summary           String?      @db.NVarChar(Max)
+  uploadedByUserId  String?
+  uploadedBy        User?        @relation(fields: [uploadedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt         DateTime     @default(now())
+  completedAt       DateTime?
+}
+
+model Notification {
+  id              String   @id @default(cuid())
+  recipientUserId String
+  recipient       User     @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+  type            String
+  title           String
+  message         String   @db.NVarChar(Max)
+  entityType      String?
+  entityId        String?
+  // Where clicking the notification should land, e.g.
+  // "/?month=2026-07&employee=<profileId>". Stored rather than derived so the
+  // destination cannot drift from what the message describes.
+  link            String   @default("")
+  isRead          Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  @@index([recipientUserId, isRead])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String   @db.NVarChar(Max)
+  updatedAt DateTime @updatedAt
+}
