@@ -61,6 +61,29 @@ export function canActOnStage(level: Level, stage: Stage): boolean {
 }
 
 /**
+ * One step back down the chain, for an administrator undoing a sign-off that
+ * should not have happened. Null at the first stage: there is nothing below
+ * "awaiting the line manager" to send a KPI back to.
+ */
+export function stageBeforeApproval(stage: Stage): Stage | null {
+  const i = STAGE_ORDER.indexOf(stage);
+  return i > 0 ? STAGE_ORDER[i - 1] : null;
+}
+
+/**
+ * The stage an employee's month sits at, given the stages of the KPIs inside
+ * it: the least advanced one. A month is only finished when every KPI in it is,
+ * so one KPI still awaiting compliance holds the whole month there - which is
+ * what the queue, the card badge and the submit guard all read.
+ */
+export function rollupStage(stages: Stage[]): Stage {
+  if (stages.length === 0) return 'APPROVED';
+  return stages.reduce((lowest, s) =>
+    STAGE_ORDER.indexOf(s) < STAGE_ORDER.indexOf(lowest) ? s : lowest
+  );
+}
+
+/**
  * Where a submission enters the chain.
  *
  * A manager who keys the numbers in has, in effect, already reviewed them, so

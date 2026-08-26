@@ -236,6 +236,11 @@ model KpiSubmission {
   normalizedActualResult      Float
   calculatedScore             Float
   weightedScore               Float
+  // Each KPI travels the approval chain on its own, so one can be signed off
+  // while another is still being queried. SubmissionApproval.stage is the
+  // rollup of these - see rollupStage() in src/lib/approvals.ts.
+  // PENDING_LINE_MANAGER | PENDING_DEPARTMENT_MANAGER | PENDING_COMPLIANCE | APPROVED
+  stage                       String            @default("PENDING_LINE_MANAGER")
   // NOT_STARTED | DRAFT | SUBMITTED | UPDATED | LOCKED | REJECTED | REOPENED
   submissionStatus            String            @default("SUBMITTED")
   // TARGET_ACHIEVED | BETWEEN_TARGET_AND_THRESHOLD | BELOW_THRESHOLD
@@ -298,15 +303,21 @@ model ApprovalEvent {
   id         String             @id @default(cuid())
   approvalId String
   approval   SubmissionApproval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
-  action     String // SUBMITTED | APPROVED | VALUES_EDITED
+  action     String // SUBMITTED | APPROVED | VALUES_EDITED | REVERTED
   // Same values as SubmissionApproval.stage.
   stage      String
+  // Which KPI the event was about; null for an action taken on the whole month.
+  // Deliberately a plain column rather than a relation, so the history outlives
+  // the KPI row being cleared - and so no second cascade path reaches this table.
+  kpiSubmissionId String?
+  kpiCode         String?
   userId     String?
   user       User?              @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   comment    String             @default("") @db.NVarChar(Max)
   createdAt  DateTime           @default(now())
 
   @@index([approvalId])
+  @@index([kpiSubmissionId])
 }
 
 model Attachment {

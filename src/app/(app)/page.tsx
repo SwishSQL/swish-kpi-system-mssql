@@ -406,6 +406,10 @@ function EmployeeCard({
   const [moveTo, setMoveTo] = useState<string | null>(null);
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
   const [clearing, setClearing] = useState<Record<string, boolean>>({});
+  // Per-KPI action in flight, keyed by assignmentId.
+  const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
+  // The KPI open in the per-row edit dialog, or null.
+  const [editRow, setEditRow] = useState<any>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const idemKey = useRef<string>('');
 
@@ -474,6 +478,96 @@ function EmployeeCard({
       }));
     } catch (err: any) {
       setMsg({ kind: 'err', text: err.message });
+    }
+  }
+
+  /**
+   * Opens the per-KPI edit dialog. An administrator correcting something that
+   * has already been approved gets the extra choice of whether the correction
+   * should send it back round the chain.
+   */
+  function openRowEdit(row: any) {
+    const sub = row.submission;
+    setEditRow({
+      assignmentId: row.assignmentId,
+      submissionId: sub.id,
+      code: row.kpi.code,
+      name: row.kpi.name,
+      target: row.target,
+      threshold: row.threshold,
+      stageLabel: sub.stageLabel,
+      actual: String(sub.actualResult ?? ''),
+      comment: sub.comment ?? '',
+      canKeepApproval: isAdmin,
+      resetApproval: !isAdmin,
+    });
+  }
+
+  /** Signs off a single KPI, leaving its siblings exactly where they are. */
+  async function approveRow(row: any) {
+    setRowBusy((p) => ({ ...p, [row.assignmentId]: true }));
+    try {
+      const res = await api(`/api/submissions/${row.submission.id}/approve`, { body: {} });
+      setMsg({ kind: 'ok', text: `${res.kpiCode}: ${res.stageLabel}.` });
+      onSaved();
+    } catch (err: any) {
+      setMsg({ kind: 'err', text: err.message });
+    } finally {
+      setRowBusy((p) => ({ ...p, [row.assignmentId]: false }));
+    }
+  }
+
+  /** Admin only: sends one KPI back a stage, the way out of a mistaken sign-off. */
+  async function revertRow(row: any) {
+    const ok = confirm(
+      `Send ${row.kpi.code} back one stage?\n\n` +
+        `It is currently at "${row.submission.stageLabel}". It will return to the previous ` +
+        `stage and become editable again by whoever owns it. No values are lost and the ` +
+        `approval history is kept.\n\nOnly this KPI is affected.`
+    );
+    if (!ok) return;
+    setRowBusy((p) => ({ ...p, [row.assignmentId]: true }));
+    try {
+      const res = await api(`/api/submissions/${row.submission.id}/revert`, { body: {} });
+      setMsg({ kind: 'ok', text: `${res.kpiCode} sent back to ${res.stageLabel}.` });
+      onSaved();
+    } catch (err: any) {
+      setMsg({ kind: 'err', text: err.message });
+    } finally {
+      setRowBusy((p) => ({ ...p, [row.assignmentId]: false }));
+    }
+  }
+
+  /** Saves the per-KPI edit dialog. */
+  async function saveRowEdit() {
+    if (!editRow) return;
+    const value = Number(editRow.actual);
+    if (editRow.actual === '' || !Number.isFinite(value)) {
+      setMsg({ kind: 'err', text: 'Enter a number for the actual result.' });
+      return;
+    }
+    setRowBusy((p) => ({ ...p, [editRow.assignmentId]: true }));
+    try {
+      const res = await api(`/api/submissions/${editRow.submissionId}`, {
+        method: 'PATCH',
+        body: {
+          actualResult: value,
+          comment: editRow.comment,
+          ...(editRow.canKeepApproval ? { resetApproval: editRow.resetApproval } : {}),
+        },
+      });
+      setMsg({
+        kind: 'ok',
+        text: `${res.kpiCode} updated — score ${fmt(res.score)}%${
+          res.approvalReset ? ', sent back for re-approval' : ''
+        }.`,
+      });
+      setEditRow(null);
+      onSaved();
+    } catch (err: any) {
+      setMsg({ kind: 'err', text: err.message });
+    } finally {
+      setRowBusy((p) => ({ ...p, [editRow.assignmentId]: false }));
     }
   }
 
@@ -893,7 +987,22 @@ function EmployeeCard({
                 <span className={`badge ${SUB_BADGE[vm.subStatus] ?? 'bg-slate-100 text-slate-500'}`}>
                   {vm.subStatus.replace(/_/g, ' ')}
                 </span>
+                {row.submission?.stage && (
+                  <span className={`badge ${STAGE_BADGE[row.submission.stage] ?? 'bg-slate-100 text-slate-600'}`}>
+                    {row.submission.stageLabel}
+                  </span>
+                )}
                 {vm.perf && <span className={`badge ${PERF_BADGE[vm.perf]}`}>{PERF_LABEL[vm.perf]}</span>}
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <RowActions
+                  row={row}
+                  busy={!!rowBusy[row.assignmentId]}
+                  onEdit={() => openRowEdit(row)}
+                  onApprove={() => approveRow(row)}
+                  onRevert={() => revertRow(row)}
+                />
               </div>
 
               {vm.isOpen && (
@@ -926,6 +1035,7 @@ function EmployeeCard({
               <th className="table-th">Evidence</th>
               <th className="table-th">Score</th>
               <th className="table-th">Status</th>
+              <th className="table-th">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -986,14 +1096,30 @@ function EmployeeCard({
                         <span className={`badge ${SUB_BADGE[vm.subStatus] ?? 'bg-slate-100 text-slate-500'}`}>
                           {vm.subStatus.replace(/_/g, ' ')}
                         </span>
+                        {/* Where this KPI has reached on its own, which may differ
+                            from every other row on the card. */}
+                        {row.submission?.stage && (
+                          <span className={`badge ${STAGE_BADGE[row.submission.stage] ?? 'bg-slate-100 text-slate-600'}`}>
+                            {row.submission.stageLabel}
+                          </span>
+                        )}
                         {vm.perf && <span className={`badge ${PERF_BADGE[vm.perf]}`}>{PERF_SHORT[vm.perf]}</span>}
                       </div>
+                    </td>
+                    <td className="table-td whitespace-nowrap">
+                      <RowActions
+                        row={row}
+                        busy={!!rowBusy[row.assignmentId]}
+                        onEdit={() => openRowEdit(row)}
+                        onApprove={() => approveRow(row)}
+                        onRevert={() => revertRow(row)}
+                      />
                     </td>
                   </tr>
                   {vm.isOpen && (
                     <tr className="bg-slate-50/70 border-t border-slate-100">
                       <td></td>
-                      <td colSpan={10} className="px-3 py-3">
+                      <td colSpan={11} className="px-3 py-3">
                         <RowDetails
                           row={row}
                           vm={vm}
@@ -1022,6 +1148,96 @@ function EmployeeCard({
         </div>
       )}
       </>
+      )}
+
+      {/* Per-KPI edit — this row only, whatever the rest of the card is doing */}
+      {editRow && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => !rowBusy[editRow.assignmentId] && setEditRow(null)}
+        >
+          <div
+            className="card w-full sm:max-w-md p-5 space-y-3 rounded-b-none sm:rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h3 className="font-bold text-slate-800">Edit {editRow.code}</h3>
+              <p className="text-[12px] text-slate-500 mt-0.5">{editRow.name}</p>
+            </div>
+
+            <div className="rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-[12px] text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
+              <span>Target <b>{fmt(editRow.target)}</b></span>
+              <span>Threshold <b>{fmt(editRow.threshold)}</b></span>
+              <span>Stage <b>{editRow.stageLabel}</b></span>
+            </div>
+
+            <div>
+              <label className="label">Actual result</label>
+              <input
+                type="number"
+                step="any"
+                className="input w-full"
+                value={editRow.actual}
+                onChange={(e) => setEditRow({ ...editRow, actual: e.target.value })}
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="label">Comment</label>
+              <textarea
+                className="input w-full"
+                rows={2}
+                value={editRow.comment}
+                onChange={(e) => setEditRow({ ...editRow, comment: e.target.value })}
+              />
+            </div>
+
+            {editRow.canKeepApproval ? (
+              <label className="flex items-start gap-2 text-[12.5px] text-slate-700">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={editRow.resetApproval}
+                  onChange={(e) => setEditRow({ ...editRow, resetApproval: e.target.checked })}
+                />
+                <span>
+                  Send back for re-approval
+                  <span className="block text-[11px] text-slate-400">
+                    Leave unticked to correct the number without disturbing the sign-offs it
+                    already has.
+                  </span>
+                </span>
+              </label>
+            ) : (
+              <p className="text-[11.5px] text-slate-500">
+                Changing the number returns this KPI to the start of the approval chain — fresh
+                numbers need fresh sign-offs.
+              </p>
+            )}
+
+            <p className="text-[11px] text-slate-400">
+              Only {editRow.code} is affected. The previous value is kept in the audit log.
+            </p>
+
+            <div className="flex gap-2 justify-end pt-1">
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!!rowBusy[editRow.assignmentId]}
+                onClick={() => setEditRow(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                disabled={!!rowBusy[editRow.assignmentId]}
+                onClick={saveRowEdit}
+              >
+                {rowBusy[editRow.assignmentId] ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {moveTo !== null && (
@@ -1142,6 +1358,68 @@ function RowGroup({ children }: { children: React.ReactNode }) {
 }
 
 const MAX_FILES_PER_KPI = 5;
+
+/**
+ * Per-KPI review actions. Each one acts on this row alone - approving,
+ * correcting or sending back one KPI never touches the others the employee
+ * holds. What appears is decided server-side per row (see canApproveAs /
+ * canRevert / canEdit in the submissions API).
+ */
+function RowActions({
+  row,
+  busy,
+  onEdit,
+  onApprove,
+  onRevert,
+}: {
+  row: any;
+  busy: boolean;
+  onEdit: () => void;
+  onApprove: () => void;
+  onRevert: () => void;
+}) {
+  const sub = row.submission;
+  if (!sub) return null;
+  const showEdit = sub.canEdit;
+  const showApprove = !!sub.canApproveAs;
+  const showRevert = sub.canRevert;
+  if (!showEdit && !showApprove && !showRevert) return null;
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      {showEdit && (
+        <button
+          className="btn-secondary btn-xs"
+          onClick={onEdit}
+          disabled={busy}
+          title={`Edit ${row.kpi.code} on its own`}
+        >
+          ✎ Edit
+        </button>
+      )}
+      {showApprove && (
+        <button
+          className="btn-primary btn-xs"
+          onClick={onApprove}
+          disabled={busy}
+          title={`${LEVEL_LABEL[sub.canApproveAs] ?? 'Approve'} — this KPI only`}
+        >
+          {busy ? '…' : '✓ Approve'}
+        </button>
+      )}
+      {showRevert && (
+        <button
+          className="btn-secondary btn-xs !text-amber-700 !border-amber-200 hover:!bg-amber-50"
+          onClick={onRevert}
+          disabled={busy}
+          title={`Send ${row.kpi.code} back one stage (administrator)`}
+        >
+          ↩ Back
+        </button>
+      )}
+    </span>
+  );
+}
 
 /**
  * Sits beside the evidence badge and throws away one KPI's recorded result.

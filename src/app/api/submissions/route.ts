@@ -233,6 +233,22 @@ export const GET = wrap(async (req: NextRequest) => {
               submittedAt: sub.submittedAt,
               updatedAt: sub.updatedAt,
               attachments: sub.attachments,
+              // Each KPI carries its own place in the approval chain, so the
+              // row's actions are judged against its stage, not the month's.
+              stage: sub.stage,
+              stageLabel: STAGE_LABEL[sub.stage as Stage],
+              canApproveAs: actionableLevel(authority.levels, sub.stage as Stage),
+              // Sending a KPI back a stage is an administrative correction.
+              canRevert: authority.isAdmin && sub.stage !== 'PENDING_LINE_MANAGER',
+              // An admin may correct any KPI at any stage; everyone else only
+              // while it is theirs to act on.
+              canEdit:
+                editable.editable &&
+                (authority.isAdmin ||
+                  (sub.stage !== 'APPROVED' &&
+                    (authority.levels.length > 0
+                      ? !!actionableLevel(authority.levels, sub.stage as Stage)
+                      : sub.submissionStatus === 'DRAFT'))),
             }
           : null,
       };

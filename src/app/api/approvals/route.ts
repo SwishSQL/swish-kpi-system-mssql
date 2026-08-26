@@ -13,8 +13,12 @@ import {
 } from '@/lib/approvals';
 import { logAudit } from '@/lib/audit';
 import { notifyUsers, complianceUserIds, managerUserIdsFor, submissionLink } from '@/lib/notify';
+import { refreshMonthStage } from '@/lib/kpiApproval';
 
 export const dynamic = 'force-dynamic';
+
+/** Lowest authority first, for picking the highest level used in a bulk approve. */
+const LEVEL_ORDER: Level[] = ['LINE_MANAGER', 'DEPARTMENT_MANAGER', 'COMPLIANCE'];
 
 /** The approval queue for the actor: every employee-month they can sign off. */
 export const GET = wrap(async (req: NextRequest) => {
@@ -69,9 +73,14 @@ const bodySchema = z.object({
 });
 
 /**
- * Sign off one employee-month. The actor's highest applicable level is used, so
- * a department manager approving an untouched submission clears the line
- * manager stage in the same step.
+ * Sign off a whole employee-month in one step - every KPI in it that the actor
+ * may currently act on.
+ *
+ * Approval lives on the individual KPI now, so this walks them rather than
+ * stamping the month directly: each row advances by the actor's highest
+ * applicable level, and the month's own stage is recomputed from what is left.
+ * A KPI already past the actor (say compliance has taken one but not the rest)
+ * is skipped rather than dragged backwards.
  */
 export const POST = wrap(async (req: NextRequest) => {
   const ctx = await getCtx(req);
@@ -98,41 +107,68 @@ export const POST = wrap(async (req: NextRequest) => {
     },
     approval.employeeProfileId
   );
-  const level = actionableLevel(authority.levels, approval.stage as Stage);
-  if (!level) {
-    throw new ApiError(403, `You cannot approve this submission at its current stage (${STAGE_LABEL[approval.stage as Stage]}).`);
+
+  const rows = await db.kpiSubmission.findMany({
+    where: {
+      employeeProfileId: approval.employeeProfileId,
+      submissionMonth: body.month,
+      submissionStatus: { not: 'DRAFT' },
+    },
+    include: { kpiAssignment: { select: { kpi: { select: { kpiCode: true } } } } },
+  });
+
+  const actionable = rows
+    .map((r) => ({ row: r, level: actionableLevel(authority.levels, r.stage as Stage) }))
+    .filter((x): x is { row: (typeof rows)[number]; level: Level } => x.level !== null);
+
+  if (actionable.length === 0) {
+    throw new ApiError(
+      403,
+      `There is nothing here for you to approve at the moment (${STAGE_LABEL[approval.stage as Stage]}).`
+    );
   }
 
-  const nextStage = stageAfterApproval(level);
   const stamp = new Date();
   const signOff: Record<Level, object> = {
     LINE_MANAGER: { lineManagerUserId: ctx.user.id, lineManagerAt: stamp },
     DEPARTMENT_MANAGER: { departmentManagerUserId: ctx.user.id, departmentManagerAt: stamp },
     COMPLIANCE: { complianceUserId: ctx.user.id, complianceAt: stamp },
   };
+  // The highest level used across the rows, for the month-level stamp.
+  const topLevel = actionable
+    .map((a) => a.level)
+    .sort((x, y) => LEVEL_ORDER.indexOf(y) - LEVEL_ORDER.indexOf(x))[0];
+
+  let nextStage: Stage = approval.stage as Stage;
 
   await db.$transaction(async (tx) => {
-    await tx.submissionApproval.update({
-      where: { id: approval.id },
-      data: { stage: nextStage, ...signOff[level] },
-    });
-    await tx.approvalEvent.create({
-      data: {
-        approvalId: approval.id,
-        action: 'APPROVED',
-        stage: nextStage,
-        userId: ctx.user.id,
-        comment: body.comment ?? '',
-      },
-    });
-
-    // Final sign-off locks the month's rows for everyone.
-    if (nextStage === 'APPROVED') {
-      await tx.kpiSubmission.updateMany({
-        where: { employeeProfileId: approval.employeeProfileId, submissionMonth: body.month },
-        data: { submissionStatus: 'LOCKED', lockedAt: stamp },
+    for (const { row, level } of actionable) {
+      const rowNext = stageAfterApproval(level);
+      await tx.kpiSubmission.update({
+        where: { id: row.id },
+        data: {
+          stage: rowNext,
+          ...(rowNext === 'APPROVED' ? { submissionStatus: 'LOCKED', lockedAt: stamp } : {}),
+        },
+      });
+      await tx.approvalEvent.create({
+        data: {
+          approvalId: approval.id,
+          action: 'APPROVED',
+          stage: rowNext,
+          kpiSubmissionId: row.id,
+          kpiCode: row.kpiAssignment.kpi.kpiCode,
+          userId: ctx.user.id,
+          comment: body.comment ?? '',
+        },
       });
     }
+
+    nextStage = (await refreshMonthStage(tx, approval.employeeProfileId, body.month)) ?? nextStage;
+    await tx.submissionApproval.update({
+      where: { id: approval.id },
+      data: signOff[topLevel],
+    });
 
     await logAudit(tx, {
       userId: ctx.user.id,
@@ -140,7 +176,13 @@ export const POST = wrap(async (req: NextRequest) => {
       entityType: 'SubmissionApproval',
       entityId: approval.id,
       oldValues: { stage: approval.stage },
-      newValues: { stage: nextStage, level, employeeId: approval.employee.employeeId, month: body.month },
+      newValues: {
+        stage: nextStage,
+        level: topLevel,
+        kpisApproved: actionable.map((a) => a.row.kpiAssignment.kpi.kpiCode),
+        employeeId: approval.employee.employeeId,
+        month: body.month,
+      },
       ipAddress: ctx.ip,
       userAgent: ctx.ua,
     });

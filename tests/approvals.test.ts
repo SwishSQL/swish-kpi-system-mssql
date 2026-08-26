@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   canActOnStage,
   stageAfterApproval,
+  stageBeforeApproval,
+  rollupStage,
   entryStage,
   actionableLevel,
   allowedMonths,
@@ -112,5 +114,51 @@ describe('submission month window', () => {
     expect(monthWithinWindow('2026-05', '2026-07', false)).toBe(false);
     expect(monthWithinWindow('2026-05', '2026-07', true)).toBe(true);
     expect(monthWithinWindow('2026-08', '2026-07', true)).toBe(false); // no submitting ahead
+  });
+});
+
+describe('sending a KPI back a stage', () => {
+  it('steps back exactly one stage', () => {
+    expect(stageBeforeApproval('APPROVED')).toBe('PENDING_COMPLIANCE');
+    expect(stageBeforeApproval('PENDING_COMPLIANCE')).toBe('PENDING_DEPARTMENT_MANAGER');
+    expect(stageBeforeApproval('PENDING_DEPARTMENT_MANAGER')).toBe('PENDING_LINE_MANAGER');
+  });
+
+  it('refuses to go below the first stage', () => {
+    expect(stageBeforeApproval('PENDING_LINE_MANAGER')).toBeNull();
+  });
+
+  it('is the exact inverse of approving, one level at a time', () => {
+    // Walking a KPI up by single levels and back down again must land where it
+    // started - otherwise a revert would skip or repeat a reviewer.
+    for (const stage of ['PENDING_LINE_MANAGER', 'PENDING_DEPARTMENT_MANAGER', 'PENDING_COMPLIANCE'] as const) {
+      const levels = { PENDING_LINE_MANAGER: 'LINE_MANAGER', PENDING_DEPARTMENT_MANAGER: 'DEPARTMENT_MANAGER', PENDING_COMPLIANCE: 'COMPLIANCE' } as const;
+      const up = stageAfterApproval(levels[stage]);
+      expect(stageBeforeApproval(up)).toBe(stage);
+    }
+  });
+});
+
+describe('rolling KPI stages up to the month', () => {
+  it('reports the least advanced KPI', () => {
+    expect(rollupStage(['APPROVED', 'PENDING_COMPLIANCE', 'APPROVED'])).toBe('PENDING_COMPLIANCE');
+    expect(rollupStage(['PENDING_COMPLIANCE', 'PENDING_LINE_MANAGER'])).toBe('PENDING_LINE_MANAGER');
+  });
+
+  it('only reports approved when every KPI is approved', () => {
+    expect(rollupStage(['APPROVED', 'APPROVED'])).toBe('APPROVED');
+    expect(rollupStage(['APPROVED', 'APPROVED', 'PENDING_DEPARTMENT_MANAGER'])).toBe(
+      'PENDING_DEPARTMENT_MANAGER'
+    );
+  });
+
+  it('is order-independent', () => {
+    expect(rollupStage(['PENDING_LINE_MANAGER', 'APPROVED'])).toBe(
+      rollupStage(['APPROVED', 'PENDING_LINE_MANAGER'])
+    );
+  });
+
+  it('treats a single KPI as the month itself', () => {
+    expect(rollupStage(['PENDING_DEPARTMENT_MANAGER'])).toBe('PENDING_DEPARTMENT_MANAGER');
   });
 });
