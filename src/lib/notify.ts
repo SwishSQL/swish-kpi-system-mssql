@@ -40,12 +40,9 @@ export async function notifyUsers(client: DbClient, userIds: string[], n: Notifi
   });
 }
 
-/**
- * Everyone who signs off at the compliance stage: the permission is what
- * counts, so an override grants it without changing anybody's role.
- */
-export async function complianceUserIds(): Promise<string[]> {
-  const perm = await db.permission.findUnique({ where: { code: 'approvals.approve_compliance' } });
+/** Everyone effectively holding a permission code: role grants plus per-user overrides. */
+export async function userIdsWithPermission(code: string): Promise<string[]> {
+  const perm = await db.permission.findUnique({ where: { code } });
   if (!perm) return [];
 
   const roles = await db.rolePermission.findMany({
@@ -70,6 +67,14 @@ export async function complianceUserIds(): Promise<string[]> {
     else ids.delete(o.userId);
   }
   return [...ids];
+}
+
+/**
+ * Everyone who signs off at the compliance stage: the permission is what
+ * counts, so an override grants it without changing anybody's role.
+ */
+export async function complianceUserIds(): Promise<string[]> {
+  return userIdsWithPermission('approvals.approve_compliance');
 }
 
 /** userIds of the direct manager chain (direct manager + department manager). */

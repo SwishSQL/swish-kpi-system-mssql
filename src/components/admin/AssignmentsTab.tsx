@@ -55,7 +55,12 @@ export default function AssignmentsTab() {
   }, [load]);
 
   useEffect(() => {
-    api('/api/kpis').then((r) => setKpis(r.kpis.filter((k: any) => k.isActive))).catch(() => {});
+    // The server already scopes this to a department head's own department;
+    // a rejected KPI can never be assigned, so it's dropped here too rather
+    // than only being refused on submit.
+    api('/api/kpis')
+      .then((r) => setKpis(r.kpis.filter((k: any) => k.isActive && k.approvalStatus !== 'REJECTED')))
+      .catch(() => {});
   }, []);
 
   async function create(e: React.FormEvent) {
@@ -134,7 +139,12 @@ export default function AssignmentsTab() {
               });
             }}>
               <option value="">— select —</option>
-              {kpis.map((k) => <option key={k.id} value={k.id}>{k.kpiCode} — {k.kpiName}</option>)}
+              {kpis.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.kpiCode} — {k.kpiName}
+                  {k.approvalStatus === 'PENDING' ? ' (awaiting approval)' : ''}
+                </option>
+              ))}
             </select>
           </div>
           <div><label className="label">Target *</label><input className="input w-24" type="number" step="any" required value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} /></div>
@@ -177,6 +187,9 @@ export default function AssignmentsTab() {
                 <td className="table-td text-xs">{a.departmentName ?? '—'}</td>
                 <td className="table-td max-w-[260px]">
                   <span className="font-mono text-xs">{a.kpiCode}</span>
+                  {a.kpiApprovalStatus === 'PENDING' && (
+                    <span className="badge bg-amber-100 text-amber-700 ml-1.5">Awaiting approval</span>
+                  )}
                   <div className="text-xs text-slate-500 truncate" title={a.kpiName}>{a.kpiName}</div>
                 </td>
                 <td className="table-td">{a.varianceIndicator === 'U' ? '↑U' : '↓D'}</td>

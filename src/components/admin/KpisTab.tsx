@@ -16,22 +16,38 @@ export default function KpisTab() {
   const { departments, can, me } = useApp();
   const [allRows, setAllRows] = useState<any[]>([]);
   const [canManage, setCanManage] = useState(false);
+  // A department head: may propose a KPI for their own department, but has
+  // none of the org-wide library rights canManage carries.
+  const [canPropose, setCanPropose] = useState(false);
+  const [canApprove, setCanApprove] = useState(false);
+  const [managedDepartmentIds, setManagedDepartmentIds] = useState<string[]>([]);
   const [q, setQ] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [freqFilter, setFreqFilter] = useState('');
   const [varFilter, setVarFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
+  const [approvalFilter, setApprovalFilter] = useState('');
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState<any>(null); // null = closed, {id?} = editing/creating
   const [deleting, setDeleting] = useState<any>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [reviewing, setReviewing] = useState<any>(null); // KPI open in the approve/reject dialog
+  const [reviewReason, setReviewReason] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const canDelete = me?.user.systemRole === 'SUPER_ADMIN' || me?.user.systemRole === 'ADMIN';
+  const myDepartments = departments.filter((d: any) => managedDepartmentIds.includes(d.id));
 
   const load = useCallback(() => {
     api(`/api/kpis?q=${encodeURIComponent(q)}`)
-      .then((r) => { setAllRows(r.kpis); setCanManage(r.canManage); })
+      .then((r) => {
+        setAllRows(r.kpis);
+        setCanManage(r.canManage);
+        setCanPropose(!!r.canPropose);
+        setCanApprove(!!r.canApprove);
+        setManagedDepartmentIds(r.managedDepartmentIds ?? []);
+      })
       .catch((e) => setMsg(e.message));
   }, [q]);
 
@@ -60,11 +76,15 @@ export default function KpisTab() {
         if (statusFilter === 'active' && !k.isActive) return false;
         if (statusFilter === 'inactive' && k.isActive) return false;
         if (statusFilter === 'unassigned' && k.assignmentCount > 0) return false;
+        if (approvalFilter && k.approvalStatus !== approvalFilter) return false;
         return true;
       }),
-    [allRows, deptFilter, freqFilter, varFilter, statusFilter]
+    [allRows, deptFilter, freqFilter, varFilter, statusFilter, approvalFilter]
   );
-  const activeFilters = [deptFilter, freqFilter, varFilter].filter(Boolean).length + (statusFilter !== 'active' ? 1 : 0);
+  const activeFilters =
+    [deptFilter, freqFilter, varFilter, approvalFilter].filter(Boolean).length +
+    (statusFilter !== 'active' ? 1 : 0);
+  const pendingCount = allRows.filter((k) => k.approvalStatus === 'PENDING').length;
 
   async function confirmDelete() {
     if (!deleting) return;
@@ -101,12 +121,41 @@ export default function KpisTab() {
         const { id, kpiCode, ...patch } = body;
         await api(`/api/kpis/${form.id}`, { method: 'PATCH', body: patch });
       } else {
-        await api('/api/kpis', { body });
+        const res = await api('/api/kpis', { body });
+        if (res.approvalStatus === 'PENDING') {
+          setMsg(`✔ ${body.kpiCode} submitted and awaiting approval from Compliance or an Admin.`);
+        }
       }
       setForm(null);
       load();
     } catch (err: any) {
       setMsg(err.message);
+    }
+  }
+
+  async function approveKpi(k: any) {
+    try {
+      await api(`/api/kpis/${k.id}/approve`, { body: {} });
+      setMsg(`✔ ${k.kpiCode} approved and is now live.`);
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    }
+  }
+
+  async function rejectKpi() {
+    if (!reviewing) return;
+    setReviewBusy(true);
+    try {
+      await api(`/api/kpis/${reviewing.id}/reject`, { body: { reason: reviewReason } });
+      setMsg(`${reviewing.kpiCode} was rejected.`);
+      setReviewing(null);
+      setReviewReason('');
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    } finally {
+      setReviewBusy(false);
     }
   }
 
@@ -133,8 +182,16 @@ export default function KpisTab() {
           <option value="inactive">Inactive only</option>
           <option value="unassigned">Not assigned to anyone</option>
         </select>
+        {(canApprove || canPropose) && (
+          <select className="input !text-[13px]" value={approvalFilter} onChange={(e) => setApprovalFilter(e.target.value)}>
+            <option value="">Any approval status</option>
+            <option value="PENDING">Awaiting approval{pendingCount > 0 ? ` (${pendingCount})` : ''}</option>
+            <option value="APPROVED">Approved</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+        )}
         {activeFilters > 0 && (
-          <button className="text-[12px] text-brand-600 hover:underline" onClick={() => { setDeptFilter(''); setFreqFilter(''); setVarFilter(''); setStatusFilter('active'); }}>
+          <button className="text-[12px] text-brand-600 hover:underline" onClick={() => { setDeptFilter(''); setFreqFilter(''); setVarFilter(''); setStatusFilter('active'); setApprovalFilter(''); }}>
             Clear
           </button>
         )}
@@ -143,7 +200,22 @@ export default function KpisTab() {
         {canManage && can('imports.run') && (
           <BulkUpload type="kpi_library" label="KPI Library" onDone={load} />
         )}
-        {canManage && <button className="btn-primary" onClick={() => setForm({ ...EMPTY })}>+ New KPI</button>}
+        {(canManage || canPropose) && (
+          <button
+            className="btn-primary"
+            onClick={() =>
+              setForm({
+                ...EMPTY,
+                // A department head's proposal is pinned to their own
+                // department from the start - there's no other one they're
+                // allowed to pick.
+                responsibleDepartmentId: !canManage && myDepartments.length === 1 ? myDepartments[0].id : '',
+              })
+            }
+          >
+            + New KPI
+          </button>
+        )}
       </div>
       {msg && (
         <div
@@ -170,6 +242,12 @@ export default function KpisTab() {
           <h3 className="sm:col-span-2 lg:col-span-4 font-bold text-slate-800">
             {form.id ? `Edit ${form.kpiCode}` : 'New KPI'}
           </h3>
+          {!form.id && !canManage && (
+            <p className="sm:col-span-2 lg:col-span-4 text-[12.5px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 -mt-1">
+              This is a proposal for your own department. It will not be assignable-and-scored
+              until Compliance or an Admin approves it.
+            </p>
+          )}
           <div><label className="label">KPI Code *</label><input className="input w-full" required disabled={!!form.id} value={form.kpiCode} onChange={(e) => setForm({ ...form, kpiCode: e.target.value })} /></div>
           <div className="sm:col-span-1 lg:col-span-3"><label className="label">KPI Name *</label><input className="input w-full" required value={form.kpiName} onChange={(e) => setForm({ ...form, kpiName: e.target.value })} /></div>
           <div className="sm:col-span-2"><label className="label">Description</label><input className="input w-full" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
@@ -197,10 +275,17 @@ export default function KpisTab() {
             <input className="input w-full" placeholder="e.g. Central Kitchen / HR" value={form.responsibleDepartmentText} onChange={(e) => setForm({ ...form, responsibleDepartmentText: e.target.value })} />
           </div>
           <div>
-            <label className="label">Link to a department (optional)</label>
-            <select className="input w-full" value={form.responsibleDepartmentId} onChange={(e) => setForm({ ...form, responsibleDepartmentId: e.target.value })}>
-              <option value="">—</option>
-              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            <label className="label">{canManage ? 'Link to a department (optional)' : 'Department *'}</label>
+            <select
+              className="input w-full"
+              required={!canManage}
+              value={form.responsibleDepartmentId}
+              onChange={(e) => setForm({ ...form, responsibleDepartmentId: e.target.value })}
+            >
+              {canManage && <option value="">—</option>}
+              {(canManage ? departments : myDepartments).map((d: any) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
             </select>
           </div>
           <div><label className="label">Form of Submission</label><input className="input w-full" value={form.formOfSubmission} onChange={(e) => setForm({ ...form, formOfSubmission: e.target.value })} /></div>
@@ -234,6 +319,8 @@ export default function KpisTab() {
               <th className="table-th">Cap</th>
               <th className="table-th">Assigned</th>
               <th className="table-th">Status</th>
+              {(canApprove || canPropose) && <th className="table-th">Approval</th>}
+              {canApprove && <th className="table-th"></th>}
               {canManage && <th className="table-th"></th>}
             </tr>
           </thead>
@@ -264,6 +351,36 @@ export default function KpisTab() {
                     {k.isActive ? 'Active' : 'Inactive'}
                   </span>
                 </td>
+                {(canApprove || canPropose) && (
+                  <td className="table-td">
+                    <span
+                      className={`badge ${
+                        k.approvalStatus === 'APPROVED'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : k.approvalStatus === 'REJECTED'
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}
+                      title={k.approvalStatus === 'REJECTED' ? k.rejectionReason || undefined : undefined}
+                    >
+                      {k.approvalStatus === 'PENDING'
+                        ? 'Awaiting approval'
+                        : k.approvalStatus === 'REJECTED'
+                          ? 'Rejected'
+                          : 'Approved'}
+                    </span>
+                  </td>
+                )}
+                {canApprove && (
+                  <td className="table-td whitespace-nowrap">
+                    {k.approvalStatus === 'PENDING' && (
+                      <>
+                        <button className="btn-primary btn-xs mr-1" onClick={() => approveKpi(k)}>Approve</button>
+                        <button className="btn-danger btn-xs" onClick={() => { setReviewing(k); setReviewReason(''); }}>Reject</button>
+                      </>
+                    )}
+                  </td>
+                )}
                 {canManage && (
                   <td className="table-td whitespace-nowrap">
                     <button
@@ -347,6 +464,43 @@ export default function KpisTab() {
               </button>
               <button className="btn-danger" disabled={deleteBusy} onClick={confirmDelete}>
                 {deleteBusy ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reviewing && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => !reviewBusy && setReviewing(null)}
+        >
+          <div className="card w-full sm:max-w-md p-5 rounded-b-none sm:rounded-lg" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-slate-800">Reject {reviewing.kpiCode}?</h3>
+            <div className="mt-3 rounded-md bg-slate-50 border border-slate-200 px-3 py-2">
+              <div className="text-[13px] font-medium text-slate-700">{reviewing.kpiName}</div>
+              <div className="text-[11.5px] text-slate-500 mt-1">
+                Proposed for {reviewing.responsibleDepartmentName || reviewing.responsibleDepartmentText || 'no department'}.
+              </div>
+            </div>
+            <p className="text-[12.5px] text-slate-500 mt-3">
+              The KPI stays in the library marked Rejected - it is not deleted - and the person
+              who proposed it is told why.
+            </p>
+            <div className="mt-3">
+              <label className="label">Reason (shown to the proposer)</label>
+              <textarea
+                className="input w-full"
+                rows={3}
+                value={reviewReason}
+                onChange={(e) => setReviewReason(e.target.value)}
+                placeholder="e.g. Duplicates KPI042, or: the target needs to be a number."
+              />
+            </div>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn-secondary" disabled={reviewBusy} onClick={() => setReviewing(null)}>Cancel</button>
+              <button className="btn-danger" disabled={reviewBusy} onClick={rejectKpi}>
+                {reviewBusy ? 'Rejecting…' : 'Reject'}
               </button>
             </div>
           </div>

@@ -93,6 +93,12 @@ export async function getCtx(
       perms.add('submissions.view_department');
       perms.add('submissions.submit_department');
       perms.add('dashboards.view_department');
+      // A department head can see and propose KPIs, and assign them to their
+      // own team - all scoped to their department by the route handlers, not
+      // by this grant. Someone who already holds the unscoped kpi_library.
+      // manage / kpi_assignments.manage keeps the wider access those give.
+      perms.add('kpi_library.view');
+      perms.add('kpi_assignments.view');
     }
   }
 

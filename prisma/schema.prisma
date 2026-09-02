@@ -51,6 +51,7 @@ model User {
   auditLogs           AuditLog[]
   notifications       Notification[]
   importJobs          ImportJob[]
+  kpisProposed        Kpi[]
 
   @@index([email])
   @@index([isActive])
@@ -173,6 +174,14 @@ model Kpi {
   scoreCap                Float             @default(100)
   zeroActualIsPerfect     Boolean           @default(false)
   isActive                Boolean           @default(true)
+  // Independent of isActive: this gates whether a department head's own
+  // proposal is usable yet. Untouched (APPROVED) for every KPI created the
+  // way the library has always worked.
+  // PENDING | APPROVED | REJECTED
+  approvalStatus          String            @default("APPROVED")
+  rejectionReason         String            @default("")
+  createdByUserId         String?
+  createdBy               User?             @relation(fields: [createdByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdAt               DateTime          @default(now())
   updatedAt               DateTime          @updatedAt
 

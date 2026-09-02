@@ -44,7 +44,10 @@ export async function getDueAssignments(monthKey: string, employeeProfileIds: st
       OR: [{ effectiveTo: null }, { effectiveTo: { gte: start } }],
       ...(employeeProfileIds ? { employeeProfileId: { in: employeeProfileIds } } : {}),
       employee: { isActive: true },
-      kpi: { isActive: true },
+      // A department head's proposal can be assigned ahead of approval, but is
+      // not due for a result until Compliance or an Admin approves it - it
+      // starts appearing on its own the moment that happens.
+      kpi: { isActive: true, approvalStatus: 'APPROVED' },
     },
     include: { kpi: true },
     orderBy: { kpi: { kpiCode: 'asc' } },
