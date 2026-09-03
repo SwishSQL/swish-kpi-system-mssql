@@ -266,8 +266,29 @@ export default function KpisTab() {
             </select>
           </div>
           <div><label className="label">Matrix / Unit</label><input className="input w-full" value={form.matrix} onChange={(e) => setForm({ ...form, matrix: e.target.value })} /></div>
-          <div><label className="label">Target (as written)</label><input className="input w-full" placeholder="e.g. ≥95% accuracy" value={form.targetText} onChange={(e) => setForm({ ...form, targetText: e.target.value })} /></div>
-          <div><label className="label">Default Target (number)</label><input className="input w-full" type="number" step="any" value={form.defaultTarget} onChange={(e) => setForm({ ...form, defaultTarget: e.target.value })} /></div>
+          <div>
+            {/* This is the field the Assignments screen actually pre-fills
+                and scoring reads - it comes first, and says so, because the
+                free-text field beside it looks like the "real" one but does
+                nothing on its own. A KPI created with a number typed only
+                into that one silently assigns with a blank/zero target.
+                Not marked required: ~60 legacy KPIs are genuinely prose-only
+                ("Target per region") and have no single number to give. */}
+            <label className="label">Target (number)</label>
+            <input className="input w-full" type="number" step="any" value={form.defaultTarget} onChange={(e) => setForm({ ...form, defaultTarget: e.target.value })} />
+            <p className="text-[11px] text-slate-400 mt-1">Used for scoring and pre-filled when this KPI is assigned.</p>
+          </div>
+          <div>
+            <label className="label">Target (as written)</label>
+            <input className="input w-full" placeholder="e.g. ≥95% accuracy" value={form.targetText} onChange={(e) => setForm({ ...form, targetText: e.target.value })} />
+            <p className="text-[11px] text-slate-400 mt-1">Display only - has no effect on scoring or assignment. Fill in the number above too.</p>
+            {form.targetText && !form.defaultTarget && !isNaN(Number(form.targetText)) && (
+              <p className="text-[11px] text-amber-600 mt-1">
+                ⚠ This looks like a plain number - put it in "Target (number)" above too, or
+                assignments of this KPI will start with a blank target.
+              </p>
+            )}
+          </div>
           <div><label className="label">Default Threshold</label><input className="input w-full" type="number" step="any" value={form.defaultThreshold} onChange={(e) => setForm({ ...form, defaultThreshold: e.target.value })} /></div>
           <div><label className="label">Default Weight %</label><input className="input w-full" type="number" step="any" value={form.defaultWeight} onChange={(e) => setForm({ ...form, defaultWeight: e.target.value })} /></div>
           <div>
