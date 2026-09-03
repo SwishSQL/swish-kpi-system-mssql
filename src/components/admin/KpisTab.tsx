@@ -67,20 +67,26 @@ export default function KpisTab() {
     [allRows]
   );
 
-  const rows = useMemo(
-    () =>
-      allRows.filter((k) => {
-        if (deptFilter && k.responsibleDepartmentText !== deptFilter) return false;
-        if (freqFilter && k.frequency !== freqFilter) return false;
-        if (varFilter && k.varianceIndicator !== varFilter) return false;
-        if (statusFilter === 'active' && !k.isActive) return false;
-        if (statusFilter === 'inactive' && k.isActive) return false;
-        if (statusFilter === 'unassigned' && k.assignmentCount > 0) return false;
-        if (approvalFilter && k.approvalStatus !== approvalFilter) return false;
-        return true;
-      }),
-    [allRows, deptFilter, freqFilter, varFilter, statusFilter, approvalFilter]
-  );
+  const rows = useMemo(() => {
+    const filtered = allRows.filter((k) => {
+      if (deptFilter && k.responsibleDepartmentText !== deptFilter) return false;
+      if (freqFilter && k.frequency !== freqFilter) return false;
+      if (varFilter && k.varianceIndicator !== varFilter) return false;
+      if (statusFilter === 'active' && !k.isActive) return false;
+      if (statusFilter === 'inactive' && k.isActive) return false;
+      if (statusFilter === 'unassigned' && k.assignmentCount > 0) return false;
+      if (approvalFilter && k.approvalStatus !== approvalFilter) return false;
+      return true;
+    });
+    // Whoever can act on a pending KPI - approving it, or waiting to hear back
+    // on their own proposal - needs it at the top, not buried somewhere in
+    // seven hundred rows sorted by code.
+    if (canApprove || canPropose) {
+      const rank = (k: any) => (k.approvalStatus === 'PENDING' ? 0 : 1);
+      return [...filtered].sort((a, b) => rank(a) - rank(b));
+    }
+    return filtered;
+  }, [allRows, deptFilter, freqFilter, varFilter, statusFilter, approvalFilter, canApprove, canPropose]);
   const activeFilters =
     [deptFilter, freqFilter, varFilter, approvalFilter].filter(Boolean).length +
     (statusFilter !== 'active' ? 1 : 0);
