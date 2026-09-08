@@ -1,4 +1,6 @@
+import { Prisma } from '@prisma/client';
 import { db } from './db';
+import { computeScore, performanceStatus, weightedScore, Variance, MatrixType } from './scoring';
 
 export function parseMonthKey(monthKey: string): { year: number; month: number } {
   const m = /^(\d{4})-(\d{2})$/.exec(monthKey);
@@ -118,4 +120,45 @@ export function periodIsEditable(
     }
   }
   return { editable: true, reason: null };
+}
+
+/**
+ * Recomputes calculatedScore/weightedScore/performanceStatus for every
+ * KpiSubmission on this assignment that hasn't reached APPROVED yet, against
+ * the given target/threshold/weight - a correction to the number, not a
+ * resubmission, so version and stage are left untouched and approved/locked
+ * history is never rewritten. Shared by the assignment PATCH handler (target/
+ * threshold edited) and by rejecting a department head's pending edit request
+ * (target/threshold reverted) - both need the identical recompute.
+ */
+export async function rescoreOpenSubmissions(
+  tx: Prisma.TransactionClient,
+  assignment: { id: string; kpi: { varianceIndicator: Variance; matrixType: MatrixType } },
+  values: { target: number; threshold: number; weight: number }
+): Promise<{ id: string }[]> {
+  const open = await tx.kpiSubmission.findMany({
+    where: { kpiAssignmentId: assignment.id, stage: { not: 'APPROVED' } },
+  });
+  const rescored: { id: string }[] = [];
+  for (const s of open) {
+    const score = computeScore({
+      variance: assignment.kpi.varianceIndicator,
+      actual: s.normalizedActualResult,
+      target: values.target,
+      matrixType: assignment.kpi.matrixType,
+    });
+    const perf = performanceStatus(
+      assignment.kpi.varianceIndicator,
+      s.normalizedActualResult,
+      values.target,
+      values.threshold
+    );
+    const weighted = weightedScore(score, values.weight);
+    await tx.kpiSubmission.update({
+      where: { id: s.id },
+      data: { calculatedScore: score, weightedScore: weighted, performanceStatus: perf },
+    });
+    rescored.push({ id: s.id });
+  }
+  return rescored;
 }

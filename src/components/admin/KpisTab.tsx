@@ -21,6 +21,7 @@ export default function KpisTab() {
   // none of the org-wide library rights canManage carries.
   const [canPropose, setCanPropose] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
+  const [canReviewEdits, setCanReviewEdits] = useState(false);
   const [managedDepartmentIds, setManagedDepartmentIds] = useState<string[]>([]);
   const [q, setQ] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
@@ -36,6 +37,11 @@ export default function KpisTab() {
   const [reviewing, setReviewing] = useState<any>(null); // KPI open in the approve/reject dialog
   const [reviewReason, setReviewReason] = useState('');
   const [reviewBusy, setReviewBusy] = useState(false);
+  // Separate from the above - this is a department head's pending EDIT to an
+  // already-approved KPI (EditRequest), not a brand-new proposal.
+  const [editReviewing, setEditReviewing] = useState<any>(null);
+  const [editReviewReason, setEditReviewReason] = useState('');
+  const [editReviewBusy, setEditReviewBusy] = useState(false);
 
   const canDelete = me?.user.systemRole === 'SUPER_ADMIN' || me?.user.systemRole === 'ADMIN';
   const myDepartments = departments.filter((d: any) => managedDepartmentIds.includes(d.id));
@@ -47,6 +53,7 @@ export default function KpisTab() {
         setCanManage(r.canManage);
         setCanPropose(!!r.canPropose);
         setCanApprove(!!r.canApprove);
+        setCanReviewEdits(!!r.canReviewEdits);
         setManagedDepartmentIds(r.managedDepartmentIds ?? []);
       })
       .catch((e) => setMsg(e.message));
@@ -162,6 +169,35 @@ export default function KpisTab() {
       setMsg(err.message);
     } finally {
       setReviewBusy(false);
+    }
+  }
+
+  // A department head's edit to an already-approved KPI, not a new proposal -
+  // see EditRequest in schema.prisma. Approve just clears the flag; reject
+  // reverts the KPI's fields to what they were before the edit.
+  async function approveEdit(k: any) {
+    try {
+      await api(`/api/edit-requests/${k.pendingEditRequestId}/approve`, { body: {} });
+      setMsg(`✔ ${k.kpiCode}'s edit was approved.`);
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    }
+  }
+
+  async function rejectEdit() {
+    if (!editReviewing) return;
+    setEditReviewBusy(true);
+    try {
+      await api(`/api/edit-requests/${editReviewing.pendingEditRequestId}/reject`, { body: { reason: editReviewReason } });
+      setMsg(`${editReviewing.kpiCode}'s edit was rejected and reverted.`);
+      setEditReviewing(null);
+      setEditReviewReason('');
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    } finally {
+      setEditReviewBusy(false);
     }
   }
 
@@ -343,13 +379,13 @@ export default function KpisTab() {
               <th className="table-th">Thresh.</th>
               <th className="table-th">Wt%</th>
               <th className="table-th">Freq</th>
-              <th className="table-th">Responsible Dept</th>
               <th className="table-th">Matrix</th>
+              <th className="table-th">Responsible Dept</th>
               <th className="table-th">Assigned</th>
               <th className="table-th">Status</th>
-              {(canApprove || canPropose) && <th className="table-th">Approval</th>}
-              {canApprove && <th className="table-th"></th>}
-              {canManage && <th className="table-th"></th>}
+              {(canApprove || canPropose || canReviewEdits) && <th className="table-th">Approval</th>}
+              {(canApprove || canReviewEdits) && <th className="table-th"></th>}
+              {(canManage || canPropose) && <th className="table-th"></th>}
             </tr>
           </thead>
           <tbody>
@@ -367,19 +403,19 @@ export default function KpisTab() {
                 <td className="table-td">{fmt(k.defaultThreshold)}</td>
                 <td className="table-td">{fmt(k.defaultWeight)}</td>
                 <td className="table-td text-xs">{k.frequency}</td>
+                <td className="table-td text-xs">{MATRIX_LABEL[k.matrixType] ?? k.matrixType}</td>
                 <td className="table-td text-xs max-w-[170px]">
                   <span className="truncate block" title={k.responsibleDepartmentText || undefined}>
                     {k.responsibleDepartmentText || k.responsibleDepartmentName || '—'}
                   </span>
                 </td>
-                <td className="table-td text-xs">{MATRIX_LABEL[k.matrixType] ?? k.matrixType}</td>
                 <td className="table-td">{k.assignmentCount}</td>
                 <td className="table-td">
                   <span className={`badge ${k.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
                     {k.isActive ? 'Active' : 'Inactive'}
                   </span>
                 </td>
-                {(canApprove || canPropose) && (
+                {(canApprove || canPropose || canReviewEdits) && (
                   <td className="table-td">
                     <span
                       className={`badge ${
@@ -397,45 +433,59 @@ export default function KpisTab() {
                           ? 'Rejected'
                           : 'Approved'}
                     </span>
+                    {k.pendingEditRequestId && (
+                      <span className="badge bg-amber-100 text-amber-700 ml-1.5">Pending Compliance Review</span>
+                    )}
                   </td>
                 )}
-                {canApprove && (
+                {(canApprove || canReviewEdits) && (
                   <td className="table-td whitespace-nowrap">
-                    {k.approvalStatus === 'PENDING' && (
+                    {k.approvalStatus === 'PENDING' && canApprove && (
                       <>
                         <button className="btn-primary btn-xs mr-1" onClick={() => approveKpi(k)}>Approve</button>
                         <button className="btn-danger btn-xs" onClick={() => { setReviewing(k); setReviewReason(''); }}>Reject</button>
                       </>
                     )}
+                    {k.pendingEditRequestId && canReviewEdits && (
+                      <>
+                        <button className="btn-primary btn-xs mr-1" onClick={() => approveEdit(k)}>Approve edit</button>
+                        <button className="btn-danger btn-xs" onClick={() => { setEditReviewing(k); setEditReviewReason(''); }}>Reject edit</button>
+                      </>
+                    )}
                   </td>
                 )}
-                {canManage && (
+                {(canManage || canPropose) && (
                   <td className="table-td whitespace-nowrap">
-                    <button
-                      className="btn-secondary btn-xs mr-1"
-                      onClick={() =>
-                        setForm({
-                          id: k.id, kpiCode: k.kpiCode, kpiName: k.kpiName, description: k.description,
-                          calculationMethod: k.calculationMethod, varianceIndicator: k.varianceIndicator,
-                          matrixType: k.matrixType, defaultTarget: k.defaultTarget ?? '', targetText: k.targetText ?? '',
-                          defaultThreshold: k.defaultThreshold ?? '',
-                          defaultWeight: k.defaultWeight ?? '', frequency: k.frequency,
-                          responsibleDepartmentId: k.responsibleDepartmentId ?? '',
-                          formOfSubmission: k.formOfSubmission,
-                        })
-                      }
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className={`btn-xs ${k.isActive ? 'btn-danger' : 'btn-primary'}`}
-                      onClick={async () => {
-                        await api(`/api/kpis/${k.id}`, { method: 'PATCH', body: { isActive: !k.isActive } });
-                        load();
-                      }}
-                    >
-                      {k.isActive ? 'Deactivate' : 'Activate'}
-                    </button>
+                    {(canManage ||
+                      (k.approvalStatus === 'APPROVED' && managedDepartmentIds.includes(k.responsibleDepartmentId))) && (
+                      <button
+                        className="btn-secondary btn-xs mr-1"
+                        onClick={() =>
+                          setForm({
+                            id: k.id, kpiCode: k.kpiCode, kpiName: k.kpiName, description: k.description,
+                            calculationMethod: k.calculationMethod, varianceIndicator: k.varianceIndicator,
+                            matrixType: k.matrixType, defaultTarget: k.defaultTarget ?? '', targetText: k.targetText ?? '',
+                            defaultThreshold: k.defaultThreshold ?? '',
+                            defaultWeight: k.defaultWeight ?? '', frequency: k.frequency,
+                            responsibleDepartmentId: k.responsibleDepartmentId ?? '',
+                            formOfSubmission: k.formOfSubmission,
+                          })
+                        }
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {canManage && (
+                      <button
+                        className={`btn-xs ${k.isActive ? 'btn-danger' : 'btn-primary'}`}
+                        onClick={async () => {
+                          await api(`/api/kpis/${k.id}`, { method: 'PATCH', body: { isActive: !k.isActive } });
+                          load();
+                        }}
+                      >
+                        {k.isActive ? 'Deactivate' : 'Activate'}
+                      </button>
+                    )}
                     {canDelete && (
                       <button
                         className="btn-xs text-red-600 hover:text-red-700 hover:underline"
@@ -528,6 +578,39 @@ export default function KpisTab() {
               <button className="btn-secondary" disabled={reviewBusy} onClick={() => setReviewing(null)}>Cancel</button>
               <button className="btn-danger" disabled={reviewBusy} onClick={rejectKpi}>
                 {reviewBusy ? 'Rejecting…' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editReviewing && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => !editReviewBusy && setEditReviewing(null)}
+        >
+          <div className="card w-full sm:max-w-md p-5 rounded-b-none sm:rounded-lg" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-slate-800">Reject the edit to {editReviewing.kpiCode}?</h3>
+            <div className="mt-3 rounded-md bg-slate-50 border border-slate-200 px-3 py-2">
+              <div className="text-[13px] font-medium text-slate-700">{editReviewing.kpiName}</div>
+            </div>
+            <p className="text-[12.5px] text-slate-500 mt-3">
+              The KPI reverts to what it held before this edit, and the department head who made
+              the change is told why.
+            </p>
+            <div className="mt-3">
+              <label className="label">Reason (shown to whoever made the edit)</label>
+              <textarea
+                className="input w-full"
+                rows={3}
+                value={editReviewReason}
+                onChange={(e) => setEditReviewReason(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn-secondary" disabled={editReviewBusy} onClick={() => setEditReviewing(null)}>Cancel</button>
+              <button className="btn-danger" disabled={editReviewBusy} onClick={rejectEdit}>
+                {editReviewBusy ? 'Rejecting…' : 'Reject edit'}
               </button>
             </div>
           </div>

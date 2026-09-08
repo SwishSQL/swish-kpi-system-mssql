@@ -53,6 +53,8 @@ model User {
   importJobs          ImportJob[]
   kpisProposed        Kpi[]
   vacationsMarked     EmployeeVacation[]
+  editRequestsSubmitted EditRequest[] @relation("EditRequestedBy")
+  editRequestsReviewed  EditRequest[] @relation("EditReviewedBy")
 
   @@index([email])
   @@index([isActive])
@@ -368,6 +370,34 @@ model Attachment {
 
   @@unique([submissionId, checksum])
   @@index([submissionId])
+}
+
+// A department head edited an existing Kpi or KpiAssignment for their own
+// department - the value is applied immediately (see the PATCH handlers),
+// but this row flags it for Compliance: approve leaves it as is, reject
+// reverts entityType/entityId to oldValues and (for an assignment) rescores
+// whatever wasn't already APPROVED. Full-permission holders (Admin,
+// kpi_assignments.manage / kpi_library.manage) never create one of these -
+// their edits are final immediately, same as before this existed.
+model EditRequest {
+  id                String   @id @default(cuid())
+  entityType        String // "KpiAssignment" | "Kpi"
+  entityId          String
+  // JSON text - SQL Server has no Prisma Json type, same as AuditLog above.
+  oldValues         String   @db.NVarChar(Max)
+  newValues         String   @db.NVarChar(Max)
+  // PENDING | APPROVED | REJECTED
+  status            String   @default("PENDING")
+  requestedByUserId String
+  requestedBy       User     @relation("EditRequestedBy", fields: [requestedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewedByUserId  String?
+  reviewedBy        User?    @relation("EditReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rejectionReason   String   @default("")
+  createdAt         DateTime @default(now())
+  reviewedAt        DateTime?
+
+  @@index([entityType, entityId])
+  @@index([status])
 }
 
 model AuditLog {

@@ -12,7 +12,12 @@ export default function AssignmentsTab() {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<any[]>([]);
   const [canManage, setCanManage] = useState(false);
+  const [canReviewEdits, setCanReviewEdits] = useState(false);
   const [msg, setMsg] = useState('');
+  // A department head's pending edit (EditRequest) open in the reject dialog.
+  const [editReviewing, setEditReviewing] = useState<any>(null);
+  const [editReviewReason, setEditReviewReason] = useState('');
+  const [editReviewBusy, setEditReviewBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [kpis, setKpis] = useState<any[]>([]);
   const [form, setForm] = useState({ employeeId: '', kpiId: '', target: '', threshold: '', weight: '', frequency: 'Monthly' });
@@ -45,7 +50,7 @@ export default function AssignmentsTab() {
     if (deptFilter) params.set('departmentId', deptFilter);
     if (q) params.set('q', q);
     api(`/api/assignments?${params}`)
-      .then((r) => { setRows(r.assignments); setCanManage(r.canManage); })
+      .then((r) => { setRows(r.assignments); setCanManage(r.canManage); setCanReviewEdits(!!r.canReviewEdits); })
       .catch((e) => setMsg(e.message));
   }, [year, deptFilter, q]);
 
@@ -83,6 +88,35 @@ export default function AssignmentsTab() {
       load();
     } catch (err: any) {
       setMsg(err.message);
+    }
+  }
+
+  // A department head's edit is already live (see the PATCH handler) - approve
+  // just clears the flag; reject reverts target/threshold/weight and rescores
+  // whatever wasn't already APPROVED. See EditRequest in schema.prisma.
+  async function approveEdit(a: any) {
+    try {
+      await api(`/api/edit-requests/${a.pendingEditRequestId}/approve`, { body: {} });
+      setMsg(`✔ ${a.kpiCode}'s edit for ${a.employeeName} was approved.`);
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    }
+  }
+
+  async function rejectEdit() {
+    if (!editReviewing) return;
+    setEditReviewBusy(true);
+    try {
+      await api(`/api/edit-requests/${editReviewing.pendingEditRequestId}/reject`, { body: { reason: editReviewReason } });
+      setMsg(`${editReviewing.kpiCode}'s edit for ${editReviewing.employeeName} was rejected and reverted.`);
+      setEditReviewing(null);
+      setEditReviewReason('');
+      load();
+    } catch (err: any) {
+      setMsg(err.message);
+    } finally {
+      setEditReviewBusy(false);
     }
   }
 
@@ -174,6 +208,7 @@ export default function AssignmentsTab() {
               <th className="table-th">Total Wt</th>
               <th className="table-th">Freq</th>
               <th className="table-th">Status</th>
+              {canReviewEdits && <th className="table-th"></th>}
               {canManage && <th className="table-th"></th>}
             </tr>
           </thead>
@@ -206,7 +241,20 @@ export default function AssignmentsTab() {
                   <span className={`badge ${a.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
                     {a.isActive ? 'Active' : 'Inactive'}
                   </span>
+                  {a.pendingEditRequestId && (
+                    <span className="badge bg-amber-100 text-amber-700 ml-1.5">Pending Compliance Review</span>
+                  )}
                 </td>
+                {canReviewEdits && (
+                  <td className="table-td whitespace-nowrap">
+                    {a.pendingEditRequestId && (
+                      <>
+                        <button className="btn-primary btn-xs mr-1" onClick={() => approveEdit(a)}>Approve edit</button>
+                        <button className="btn-danger btn-xs" onClick={() => { setEditReviewing(a); setEditReviewReason(''); }}>Reject edit</button>
+                      </>
+                    )}
+                  </td>
+                )}
                 {canManage && (
                   <td className="table-td whitespace-nowrap">
                     <button className="btn-secondary btn-xs mr-1" onClick={() => setEdit({ ...a })}>Edit</button>
@@ -294,6 +342,39 @@ export default function AssignmentsTab() {
               </button>
               <button className="btn-danger" disabled={deleteBusy} onClick={confirmDelete}>
                 {deleteBusy ? 'Removing…' : 'Remove permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editReviewing && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => !editReviewBusy && setEditReviewing(null)}
+        >
+          <div className="card w-full sm:max-w-md p-5 rounded-b-none sm:rounded-lg" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-slate-800">
+              Reject the edit to {editReviewing.kpiCode} for {editReviewing.employeeName}?
+            </h3>
+            <p className="text-[12.5px] text-slate-500 mt-3">
+              Target/threshold/weight revert to what they held before this edit, any submission
+              that isn't already approved is rescored back, and the department head who made the
+              change is told why.
+            </p>
+            <div className="mt-3">
+              <label className="label">Reason (shown to whoever made the edit)</label>
+              <textarea
+                className="input w-full"
+                rows={3}
+                value={editReviewReason}
+                onChange={(e) => setEditReviewReason(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2 justify-end mt-4">
+              <button className="btn-secondary" disabled={editReviewBusy} onClick={() => setEditReviewing(null)}>Cancel</button>
+              <button className="btn-danger" disabled={editReviewBusy} onClick={rejectEdit}>
+                {editReviewBusy ? 'Rejecting…' : 'Reject edit'}
               </button>
             </div>
           </div>

@@ -53,7 +53,17 @@ export const GET = wrap(async (req: NextRequest) => {
     orderBy: { kpiCode: 'asc' },
     take: 1000,
   });
+
+  // A department head's edit is applied immediately but flagged until
+  // Compliance reviews it - see EditRequest in schema.prisma.
+  const pendingEdits = await db.editRequest.findMany({
+    where: { entityType: 'Kpi', entityId: { in: kpis.map((k) => k.id) }, status: 'PENDING' },
+    select: { id: true, entityId: true },
+  });
+  const pendingEditByKpi = new Map(pendingEdits.map((e) => [e.entityId, e.id]));
+
   return NextResponse.json({
+    canReviewEdits: ctx.perms.has('approvals.approve_compliance'),
     kpis: kpis.map((k) => ({
       id: k.id,
       kpiCode: k.kpiCode,
@@ -77,6 +87,7 @@ export const GET = wrap(async (req: NextRequest) => {
       rejectionReason: k.rejectionReason,
       createdByUserId: k.createdByUserId,
       isMine: k.createdByUserId === ctx.user.id,
+      pendingEditRequestId: pendingEditByKpi.get(k.id) ?? null,
     })),
     canManage,
     canPropose,

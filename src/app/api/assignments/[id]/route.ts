@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { wrap, getCtx, requirePerm, ApiError } from '@/lib/api';
 import { logAudit } from '@/lib/audit';
-import { round2, computeScore, performanceStatus, weightedScore } from '@/lib/scoring';
+import { round2 } from '@/lib/scoring';
+import { rescoreOpenSubmissions } from '@/lib/submissions';
+import { notifyUsers, complianceUserIds } from '@/lib/notify';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,7 +120,8 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
     (body.target !== undefined && body.target !== assignment.target) ||
     (body.threshold !== undefined && body.threshold !== assignment.threshold);
 
-  const rescored: { id: string }[] = [];
+  let rescored: { id: string }[] = [];
+  let editRequestId: string | null = null;
 
   await db.$transaction(async (tx) => {
     await tx.kpiAssignment.update({
@@ -139,32 +142,45 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
       },
     });
 
-    // The target/threshold just changed under whatever hasn't been signed off
-    // yet - a correction to the number, not a resubmission, so version and
-    // stage are left untouched and approved/locked history is never rewritten.
     if (targetOrThresholdChanged) {
-      const open = await tx.kpiSubmission.findMany({
-        where: { kpiAssignmentId: assignment.id, stage: { not: 'APPROVED' } },
-      });
-      for (const s of open) {
-        const score = computeScore({
-          variance: assignment.kpi.varianceIndicator as 'U' | 'D',
-          actual: s.normalizedActualResult,
-          target: newTarget,
-          matrixType: assignment.kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
+      rescored = await rescoreOpenSubmissions(
+        tx,
+        {
+          ...assignment,
+          kpi: {
+            varianceIndicator: assignment.kpi.varianceIndicator as 'U' | 'D',
+            matrixType: assignment.kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
+          },
+        },
+        { target: newTarget, threshold: newThreshold, weight: newWeight }
+      );
+    }
+
+    // A department head's edit is applied immediately like any other, but
+    // flagged for Compliance to review - see EditRequest in schema.prisma.
+    // Reject reverts these same fields and rescores the same way; approve
+    // just clears the flag, nothing about the applied values changes.
+    if (canManageOwnDept) {
+      const changedFields = ['target', 'threshold', 'weight'] as const;
+      const oldValues: Record<string, number> = {};
+      const newValues: Record<string, number> = {};
+      for (const f of changedFields) {
+        if (body[f] !== undefined && body[f] !== assignment[f]) {
+          oldValues[f] = assignment[f];
+          newValues[f] = body[f]!;
+        }
+      }
+      if (Object.keys(newValues).length > 0) {
+        const editRequest = await tx.editRequest.create({
+          data: {
+            entityType: 'KpiAssignment',
+            entityId: assignment.id,
+            oldValues: JSON.stringify(oldValues),
+            newValues: JSON.stringify(newValues),
+            requestedByUserId: ctx.user.id,
+          },
         });
-        const perf = performanceStatus(
-          assignment.kpi.varianceIndicator as 'U' | 'D',
-          s.normalizedActualResult,
-          newTarget,
-          newThreshold
-        );
-        const weighted = weightedScore(score, newWeight);
-        await tx.kpiSubmission.update({
-          where: { id: s.id },
-          data: { calculatedScore: score, weightedScore: weighted, performanceStatus: perf },
-        });
-        rescored.push({ id: s.id });
+        editRequestId = editRequest.id;
       }
     }
 
@@ -182,10 +198,24 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
       newValues: {
         ...body,
         rescoredSubmissions: rescored.length,
+        editRequestId,
       },
       ipAddress: ctx.ip,
       userAgent: ctx.ua,
     });
   });
-  return NextResponse.json({ ok: true, rescoredSubmissions: rescored.length });
+
+  if (editRequestId) {
+    const approvers = await complianceUserIds();
+    await notifyUsers(db, approvers, {
+      type: 'EDIT_PENDING_COMPLIANCE_REVIEW',
+      title: 'Assignment edit awaiting Compliance review',
+      message: `${ctx.user.fullName} edited ${assignment.kpi.kpiCode} for ${assignment.employee.fullName}.`,
+      entityType: 'KpiAssignment',
+      entityId: assignment.id,
+      link: '/admin',
+    });
+  }
+
+  return NextResponse.json({ ok: true, rescoredSubmissions: rescored.length, editRequestId });
 });

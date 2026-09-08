@@ -3,6 +3,24 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { wrap, getCtx, requirePerm, ApiError } from '@/lib/api';
 import { logAudit } from '@/lib/audit';
+import { notifyUsers, complianceUserIds } from '@/lib/notify';
+
+// Fields a department head may edit for their own department's KPI. Moving a
+// KPI to a different department or (de)activating it stays manage-only - those
+// are library-administration actions, not "editing this KPI's own definition."
+const DEPARTMENT_HEAD_EDITABLE_FIELDS = [
+  'kpiName',
+  'description',
+  'calculationMethod',
+  'varianceIndicator',
+  'matrixType',
+  'defaultTarget',
+  'targetText',
+  'defaultThreshold',
+  'defaultWeight',
+  'frequency',
+  'formOfSubmission',
+] as const;
 
 export const dynamic = 'force-dynamic';
 
@@ -81,16 +99,75 @@ export const DELETE = wrap(async (req: NextRequest, { params }: { params: { id: 
   });
 });
 
+/**
+ * Full kpi_library.manage rights edit any KPI, same as always. A department
+ * head with none of that may edit a KPI belonging to their own department -
+ * but only once it is APPROVED (a still-pending proposal is corrected by
+ * rejecting/resubmitting, not through this path), and only the fields that
+ * describe the KPI itself, not its department or active status.
+ */
 export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: string } }) => {
   const ctx = await getCtx(req);
-  requirePerm(ctx, 'kpi_library.manage');
+  const canManageAny = ctx.perms.has('kpi_library.manage');
+  const canManageOwnDept = !canManageAny && ctx.managedDepartmentIds.length > 0;
+  if (!canManageAny && !canManageOwnDept) {
+    throw new ApiError(403, 'You do not have permission to perform this action.');
+  }
   const body = patchSchema.parse(await req.json());
 
   const kpi = await db.kpi.findUnique({ where: { id: params.id } });
   if (!kpi) throw new ApiError(404, 'KPI not found.');
 
+  if (canManageOwnDept) {
+    if (!kpi.responsibleDepartmentId || !ctx.managedDepartmentIds.includes(kpi.responsibleDepartmentId)) {
+      throw new ApiError(403, 'You can only edit a KPI that belongs to a department you manage.');
+    }
+    if (kpi.approvalStatus !== 'APPROVED') {
+      throw new ApiError(409, 'A still-pending proposal is corrected by rejecting or resubmitting it, not by editing.');
+    }
+    // Only flag fields outside the allowed set if they're actually being
+    // changed - the edit form round-trips every field on the KPI, changed or
+    // not, so an unchanged responsibleDepartmentId/isActive must not 403.
+    const disallowed = Object.keys(body).filter(
+      (k) =>
+        !(DEPARTMENT_HEAD_EDITABLE_FIELDS as readonly string[]).includes(k) &&
+        (body as Record<string, unknown>)[k] !== (kpi as Record<string, unknown>)[k]
+    );
+    if (disallowed.length > 0) {
+      throw new ApiError(403, `You cannot change ${disallowed.join(', ')} - that requires full KPI library rights.`);
+    }
+  }
+
+  let editRequestId: string | null = null;
+
   await db.$transaction(async (tx) => {
     await tx.kpi.update({ where: { id: kpi.id }, data: body });
+
+    // A department head's edit is applied immediately like any other, but
+    // flagged for Compliance to review - see EditRequest in schema.prisma.
+    if (canManageOwnDept) {
+      const oldValues: Record<string, unknown> = {};
+      const newValues: Record<string, unknown> = {};
+      for (const f of DEPARTMENT_HEAD_EDITABLE_FIELDS) {
+        if (body[f] !== undefined && body[f] !== kpi[f]) {
+          oldValues[f] = kpi[f];
+          newValues[f] = body[f];
+        }
+      }
+      if (Object.keys(newValues).length > 0) {
+        const editRequest = await tx.editRequest.create({
+          data: {
+            entityType: 'Kpi',
+            entityId: kpi.id,
+            oldValues: JSON.stringify(oldValues),
+            newValues: JSON.stringify(newValues),
+            requestedByUserId: ctx.user.id,
+          },
+        });
+        editRequestId = editRequest.id;
+      }
+    }
+
     await logAudit(tx, {
       userId: ctx.user.id,
       action: 'KPI_UPDATED',
@@ -102,10 +179,23 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
         matrixType: kpi.matrixType,
         isActive: kpi.isActive,
       },
-      newValues: body,
+      newValues: { ...body, editRequestId },
       ipAddress: ctx.ip,
       userAgent: ctx.ua,
     });
   });
-  return NextResponse.json({ ok: true });
+
+  if (editRequestId) {
+    const approvers = await complianceUserIds();
+    await notifyUsers(db, approvers, {
+      type: 'EDIT_PENDING_COMPLIANCE_REVIEW',
+      title: 'KPI edit awaiting Compliance review',
+      message: `${ctx.user.fullName} edited ${kpi.kpiCode} - ${kpi.kpiName}.`,
+      entityType: 'Kpi',
+      entityId: kpi.id,
+      link: '/admin',
+    });
+  }
+
+  return NextResponse.json({ ok: true, editRequestId });
 });

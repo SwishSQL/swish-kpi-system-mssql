@@ -62,8 +62,17 @@ export const GET = wrap(async (req: NextRequest) => {
     );
   }
 
+  // A department head's edit is applied immediately but flagged until
+  // Compliance reviews it - see EditRequest in schema.prisma.
+  const pendingEdits = await db.editRequest.findMany({
+    where: { entityType: 'KpiAssignment', entityId: { in: assignments.map((a) => a.id) }, status: 'PENDING' },
+    select: { id: true, entityId: true },
+  });
+  const pendingEditByAssignment = new Map(pendingEdits.map((e) => [e.entityId, e.id]));
+
   return NextResponse.json({
     year,
+    canReviewEdits: ctx.perms.has('approvals.approve_compliance'),
     assignments: assignments.map((a) => ({
       id: a.id,
       employeeProfileId: a.employeeProfileId,
@@ -84,6 +93,7 @@ export const GET = wrap(async (req: NextRequest) => {
       effectiveTo: a.effectiveTo,
       isActive: a.isActive,
       employeeWeightTotal: weightByEmployee.get(a.employeeProfileId) ?? 0,
+      pendingEditRequestId: pendingEditByAssignment.get(a.id) ?? null,
     })),
     canManage: canManageAny || ctx.managedDepartmentIds.length > 0,
   });
