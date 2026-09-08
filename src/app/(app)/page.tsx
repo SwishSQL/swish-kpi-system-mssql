@@ -739,8 +739,9 @@ function EmployeeCard({
     (r: any) => r.submission?.performanceStatus === 'BELOW_THRESHOLD'
   ).length;
 
-  const progressBadge =
-    submittedCount === 0
+  const progressBadge = emp.onVacation
+    ? { cls: 'bg-sky-100 text-sky-700', text: '🏖 On Vacation' }
+    : submittedCount === 0
       ? { cls: 'bg-slate-100 text-slate-500', text: 'Not started' }
       : submittedCount < total
         ? { cls: 'bg-amber-100 text-amber-700', text: `${submittedCount}/${total} submitted` }
@@ -795,6 +796,45 @@ function EmployeeCard({
       }
     >
       ↷ Move month
+    </button>
+  );
+
+  /**
+   * Excuses this employee from this one month entirely - no KPI is due from
+   * them, and nothing about them counts toward compliance/scoring stats,
+   * without touching anything they may have already recorded (it is simply
+   * not shown/counted while this is set, and reappears if cancelled). Same
+   * authority as Move month: a reviewer's call on someone else's behalf.
+   */
+  async function toggleVacation() {
+    setMsg(null);
+    setBusy(true);
+    try {
+      await api('/api/vacations', {
+        method: emp.onVacation ? 'DELETE' : 'POST',
+        body: { employeeProfileId: emp.profile.id, month },
+      });
+      setMsg({ kind: 'ok', text: emp.onVacation ? `Vacation cancelled for ${month}.` : `Marked on vacation for ${month}.` });
+      onSaved();
+    } catch (err: any) {
+      setMsg({ kind: 'err', text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const vacationButton = emp.canMarkVacation && (
+    <button
+      className="btn-secondary w-full sm:w-auto"
+      onClick={toggleVacation}
+      disabled={busy}
+      title={
+        emp.onVacation
+          ? `Cancel ${emp.profile.fullName}'s vacation for ${month}`
+          : `Mark ${emp.profile.fullName} on vacation for ${month} - no KPI will be due from them and it won't count against completion stats`
+      }
+    >
+      {busy ? 'Working…' : emp.onVacation ? '🏖 Cancel vacation' : '🏖 Mark vacation'}
     </button>
   );
 
@@ -906,6 +946,7 @@ function EmployeeCard({
               {approveButton}
               {clearAllButton}
               {moveMonthButton}
+              {vacationButton}
               {removeButton}
             </div>
             {emp.approval && (
@@ -923,7 +964,15 @@ function EmployeeCard({
         )}
       </div>
 
-      {!open ? null : (
+      {!open ? null : emp.onVacation ? (
+        <div className="px-3 py-4 text-sm text-slate-500 space-y-2">
+          <div>🏖 {emp.profile.fullName} is on vacation for {month} - no KPI is due from them this month.</div>
+          {/* The header's action row is desktop-only (hidden sm:flex) and the
+              mobile action bar below lives inside the non-vacation branch, so
+              this is the only way to cancel vacation from a phone. */}
+          <div className="sm:hidden">{vacationButton}</div>
+        </div>
+      ) : (
       <>
       {/* Mobile: one card per KPI */}
       <div className="lg:hidden divide-y divide-slate-100">
@@ -1146,12 +1195,13 @@ function EmployeeCard({
       </div>
 
       {/* Mobile action bar */}
-      {(emp.canSubmit || emp.canApproveAs || isAdmin) && (
+      {(emp.canSubmit || emp.canApproveAs || emp.canMarkVacation || isAdmin) && (
         <div className="sm:hidden p-3 border-t border-slate-200 bg-slate-50 space-y-2">
           {submitButton}
           {approveButton}
           {clearAllButton}
           {moveMonthButton}
+          {vacationButton}
           {removeButton}
         </div>
       )}

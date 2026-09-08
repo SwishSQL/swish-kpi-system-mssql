@@ -52,6 +52,7 @@ model User {
   notifications       Notification[]
   importJobs          ImportJob[]
   kpisProposed        Kpi[]
+  vacationsMarked     EmployeeVacation[]
 
   @@index([email])
   @@index([isActive])
@@ -141,6 +142,7 @@ model EmployeeProfile {
   assignments KpiAssignment[]
   submissions KpiSubmission[]
   approvals   SubmissionApproval[]
+  vacations   EmployeeVacation[]
 
   @@index([departmentId])
   @@index([directManagerEmployeeId])
@@ -308,6 +310,23 @@ model SubmissionApproval {
 
   @@unique([employeeProfileId, submissionMonth])
   @@index([stage])
+  @@index([submissionMonth])
+}
+
+// A department head/line manager (or admin) marking that an employee was away
+// for a whole month - see getDueAssignments() in src/lib/submissions.ts, the
+// single point where this excludes that employee's KPIs from being due, so
+// nothing else in the app has to know this table exists.
+model EmployeeVacation {
+  id                String          @id @default(cuid())
+  employeeProfileId String
+  employee          EmployeeProfile @relation(fields: [employeeProfileId], references: [id], onDelete: Cascade)
+  submissionMonth   String // "YYYY-MM"
+  markedByUserId    String?
+  markedBy          User?           @relation(fields: [markedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt         DateTime        @default(now())
+
+  @@unique([employeeProfileId, submissionMonth])
   @@index([submissionMonth])
 }
 

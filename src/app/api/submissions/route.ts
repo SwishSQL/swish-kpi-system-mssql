@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { wrap, getCtx, ApiError } from '@/lib/api';
 import { getVisibleScope } from '@/lib/access';
-import { getDueAssignments, getPeriod, periodIsEditable, parseMonthKey } from '@/lib/submissions';
+import { getDueAssignments, getVacationingEmployeeIds, getPeriod, periodIsEditable, parseMonthKey } from '@/lib/submissions';
 import { employeeFinalScore } from '@/lib/scoring';
 import {
   authorityIn,
@@ -139,7 +139,10 @@ export const GET = wrap(async (req: NextRequest) => {
   }
 
   const profileIds = pageProfiles.map((p) => p.id);
-  const assignments = await getDueAssignments(monthKey, profileIds);
+  const [assignments, vacationing] = await Promise.all([
+    getDueAssignments(monthKey, profileIds),
+    getVacationingEmployeeIds(monthKey, profileIds),
+  ]);
   const [submissions, approvals] = await Promise.all([
     db.kpiSubmission.findMany({
       where: { submissionMonth: monthKey, kpiAssignmentId: { in: assignments.map((a) => a.id) } },
@@ -300,6 +303,10 @@ export const GET = wrap(async (req: NextRequest) => {
       // results under the wrong month is exactly who should not be trusted to
       // relabel them - that is moving the same mistake, not correcting it.
       canMoveMonth: authority.levels.length > 0 || authority.isAdmin,
+      // Same authority as moving a month - a reviewer's correction on someone
+      // else's behalf, never the employee themselves.
+      onVacation: vacationing.has(pid),
+      canMarkVacation: authority.levels.length > 0 || authority.isAdmin,
       totalWeight,
       weightsValid,
       canSubmit:

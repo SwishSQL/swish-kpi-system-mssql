@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { wrap, getCtx, requirePerm, ApiError } from '@/lib/api';
 import { getVisibleScope } from '@/lib/access';
 import { logAudit } from '@/lib/audit';
-import { getDueAssignments } from '@/lib/submissions';
+import { getDueAssignments, getVacationingEmployeeIds } from '@/lib/submissions';
 import { STAGE_LABEL, type Stage } from '@/lib/approvals';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +25,7 @@ export const GET = wrap(async (req: NextRequest) => {
   // dump of KpiSubmission rows made anyone who hasn't submitted, or whose
   // result is still moving through the approval chain, invisible in the
   // export.
-  const [assignments, submissions] = await Promise.all([
+  const [assignments, submissions, vacationing] = await Promise.all([
     getDueAssignments(monthKey, scope.employeeProfileIds).then((list) =>
       db.kpiAssignment.findMany({
         where: { id: { in: list.map((a) => a.id) } },
@@ -41,8 +41,21 @@ export const GET = wrap(async (req: NextRequest) => {
       },
       include: { submittedBy: { select: { fullName: true } }, _count: { select: { attachments: true } } },
     }),
+    getVacationingEmployeeIds(monthKey, scope.employeeProfileIds),
   ]);
   const byAssignmentId = new Map(submissions.map((s) => [s.kpiAssignmentId, s]));
+
+  // getDueAssignments already excludes anyone on vacation this month, so they
+  // would otherwise vanish from the export entirely - the same invisibility
+  // problem the "due, not just recorded" rewrite was meant to fix. One
+  // explicit row per vacationing employee instead, KPI columns left blank.
+  const vacationingEmployees = vacationing.size
+    ? await db.employeeProfile.findMany({
+        where: { id: { in: [...vacationing] } },
+        include: { department: true },
+        orderBy: { fullName: 'asc' },
+      })
+    : [];
 
   const header = [
     'Period', 'Department', 'Employee ID', 'Employee Name', 'KPI Code', 'KPI Name',
@@ -76,6 +89,14 @@ export const GET = wrap(async (req: NextRequest) => {
       s?.updatedAt.toISOString() ?? '',
     ];
   });
+  for (const e of vacationingEmployees) {
+    rows.push([
+      monthKey, e.department?.name ?? '', e.employeeId, e.fullName,
+      '', '', '', '', '', '', '', '', '', '',
+      'On Vacation',
+      '', '', '', '', '', '',
+    ]);
+  }
 
   const csv = [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
   await logAudit(db, {

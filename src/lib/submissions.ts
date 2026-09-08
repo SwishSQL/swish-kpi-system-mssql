@@ -32,27 +32,56 @@ export function isDueInMonth(_frequency: string, _month: number): boolean {
   return true;
 }
 
-/** Active assignments due for the given month, with KPI details. */
+/**
+ * Employees marked away for the whole month - see EmployeeVacation in
+ * schema.prisma. Shared by getDueAssignments() (below) and by anything that
+ * needs to display the flag itself (the Submissions screen badge, the export's
+ * synthetic "On Vacation" row) without re-querying it.
+ */
+export async function getVacationingEmployeeIds(
+  monthKey: string,
+  employeeProfileIds: string[] | null
+): Promise<Set<string>> {
+  const vacations = await db.employeeVacation.findMany({
+    where: {
+      submissionMonth: monthKey,
+      ...(employeeProfileIds ? { employeeProfileId: { in: employeeProfileIds } } : {}),
+    },
+    select: { employeeProfileId: true },
+  });
+  return new Set(vacations.map((v) => v.employeeProfileId));
+}
+
+/**
+ * Active assignments due for the given month, with KPI details. Excludes
+ * anyone on vacation that month - see getVacationingEmployeeIds() above. This
+ * is the single point every caller (Submissions screen, submit validation,
+ * dashboard stats, export) reads "what's due," so marking someone on vacation
+ * here is enough to stop requiring and stop counting them everywhere at once.
+ */
 export async function getDueAssignments(monthKey: string, employeeProfileIds: string[] | null) {
   const { year, month } = parseMonthKey(monthKey);
   const { start, end } = monthBounds(monthKey);
-  const assignments = await db.kpiAssignment.findMany({
-    where: {
-      year,
-      isActive: true,
-      effectiveFrom: { lte: end },
-      OR: [{ effectiveTo: null }, { effectiveTo: { gte: start } }],
-      ...(employeeProfileIds ? { employeeProfileId: { in: employeeProfileIds } } : {}),
-      employee: { isActive: true },
-      // A department head's proposal can be assigned ahead of approval, but is
-      // not due for a result until Compliance or an Admin approves it - it
-      // starts appearing on its own the moment that happens.
-      kpi: { isActive: true, approvalStatus: 'APPROVED' },
-    },
-    include: { kpi: true },
-    orderBy: { kpi: { kpiCode: 'asc' } },
-  });
-  return assignments.filter((a) => isDueInMonth(a.frequency, month));
+  const [assignments, onVacation] = await Promise.all([
+    db.kpiAssignment.findMany({
+      where: {
+        year,
+        isActive: true,
+        effectiveFrom: { lte: end },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: start } }],
+        ...(employeeProfileIds ? { employeeProfileId: { in: employeeProfileIds } } : {}),
+        employee: { isActive: true },
+        // A department head's proposal can be assigned ahead of approval, but is
+        // not due for a result until Compliance or an Admin approves it - it
+        // starts appearing on its own the moment that happens.
+        kpi: { isActive: true, approvalStatus: 'APPROVED' },
+      },
+      include: { kpi: true },
+      orderBy: { kpi: { kpiCode: 'asc' } },
+    }),
+    getVacationingEmployeeIds(monthKey, employeeProfileIds),
+  ]);
+  return assignments.filter((a) => isDueInMonth(a.frequency, month) && !onVacation.has(a.employeeProfileId));
 }
 
 export async function getPeriod(monthKey: string) {
