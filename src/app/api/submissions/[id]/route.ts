@@ -118,8 +118,7 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
       variance: assignment.kpi.varianceIndicator as 'U' | 'D',
       actual,
       target: assignment.target,
-      scoreCap: assignment.kpi.scoreCap,
-      zeroActualIsPerfect: assignment.kpi.zeroActualIsPerfect,
+      matrixType: assignment.kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
     });
     scored = {
       actual,

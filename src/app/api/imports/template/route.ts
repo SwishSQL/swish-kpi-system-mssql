@@ -84,7 +84,7 @@ export const GET = wrap(async (req: NextRequest) => {
     for (const k of kpis) {
       rows.push([
         k.kpiCode, k.kpiName, k.description, k.calculationMethod,
-        k.varianceIndicator, k.matrix,
+        k.varianceIndicator, k.matrixType,
         k.targetText || (k.defaultTarget ?? ''),
         k.defaultThreshold ?? '', k.defaultWeight ?? '',
         k.frequency, k.responsibleDepartmentText, k.formOfSubmission,
@@ -103,7 +103,7 @@ export const GET = wrap(async (req: NextRequest) => {
         a.employee.position ?? '',
         a.employee.dateOfHiring ? a.employee.dateOfHiring.toISOString().slice(0, 10) : '',
         a.employee.perspective ?? '',
-        a.kpi.kpiCode, a.kpi.kpiName, a.kpi.varianceIndicator, a.kpi.matrix,
+        a.kpi.kpiCode, a.kpi.kpiName, a.kpi.varianceIndicator, a.kpi.matrixType,
         a.weight, a.frequency, a.target, a.threshold, a.formOfSubmission,
       ]);
     }

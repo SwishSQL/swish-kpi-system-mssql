@@ -167,8 +167,7 @@ export const POST = wrap(async (req: NextRequest) => {
         variance: a.kpi.varianceIndicator as 'U' | 'D',
         actual,
         target: a.target,
-        scoreCap: a.kpi.scoreCap,
-        zeroActualIsPerfect: a.kpi.zeroActualIsPerfect,
+        matrixType: a.kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
       });
       const perf = performanceStatus(a.kpi.varianceIndicator as 'U' | 'D', actual, a.target, a.threshold);
       if (perf === 'BELOW_THRESHOLD') belowThresholdCodes.push(a.kpi.kpiCode);

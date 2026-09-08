@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { wrap, getCtx, requirePerm, ApiError } from '@/lib/api';
 import { logAudit } from '@/lib/audit';
-import { round2 } from '@/lib/scoring';
+import { round2, computeScore, performanceStatus, weightedScore } from '@/lib/scoring';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,13 +84,41 @@ export const DELETE = wrap(async (req: NextRequest, { params }: { params: { id: 
   });
 });
 
+/**
+ * Full kpi_assignments.manage rights edit any assignment, same as always. A
+ * department head with none of that may still edit, but only an assignment
+ * whose employee belongs to a department they manage - the same boundary
+ * already enforced on assigning someone in the first place.
+ */
 export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: string } }) => {
   const ctx = await getCtx(req);
-  requirePerm(ctx, 'kpi_assignments.manage');
+  const canManageAny = ctx.perms.has('kpi_assignments.manage');
+  const canManageOwnDept = !canManageAny && ctx.managedDepartmentIds.length > 0;
+  if (!canManageAny && !canManageOwnDept) {
+    throw new ApiError(403, 'You do not have permission to perform this action.');
+  }
   const body = patchSchema.parse(await req.json());
 
-  const assignment = await db.kpiAssignment.findUnique({ where: { id: params.id } });
+  const assignment = await db.kpiAssignment.findUnique({
+    where: { id: params.id },
+    include: { employee: true, kpi: true },
+  });
   if (!assignment) throw new ApiError(404, 'Assignment not found.');
+
+  if (canManageOwnDept) {
+    if (!assignment.employee.departmentId || !ctx.managedDepartmentIds.includes(assignment.employee.departmentId)) {
+      throw new ApiError(403, 'You can only edit assignments for someone in a department you manage.');
+    }
+  }
+
+  const newTarget = body.target ?? assignment.target;
+  const newThreshold = body.threshold ?? assignment.threshold;
+  const newWeight = body.weight ?? assignment.weight;
+  const targetOrThresholdChanged =
+    (body.target !== undefined && body.target !== assignment.target) ||
+    (body.threshold !== undefined && body.threshold !== assignment.threshold);
+
+  const rescored: { id: string }[] = [];
 
   await db.$transaction(async (tx) => {
     await tx.kpiAssignment.update({
@@ -110,6 +138,36 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
         isActive: body.isActive,
       },
     });
+
+    // The target/threshold just changed under whatever hasn't been signed off
+    // yet - a correction to the number, not a resubmission, so version and
+    // stage are left untouched and approved/locked history is never rewritten.
+    if (targetOrThresholdChanged) {
+      const open = await tx.kpiSubmission.findMany({
+        where: { kpiAssignmentId: assignment.id, stage: { not: 'APPROVED' } },
+      });
+      for (const s of open) {
+        const score = computeScore({
+          variance: assignment.kpi.varianceIndicator as 'U' | 'D',
+          actual: s.normalizedActualResult,
+          target: newTarget,
+          matrixType: assignment.kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
+        });
+        const perf = performanceStatus(
+          assignment.kpi.varianceIndicator as 'U' | 'D',
+          s.normalizedActualResult,
+          newTarget,
+          newThreshold
+        );
+        const weighted = weightedScore(score, newWeight);
+        await tx.kpiSubmission.update({
+          where: { id: s.id },
+          data: { calculatedScore: score, weightedScore: weighted, performanceStatus: perf },
+        });
+        rescored.push({ id: s.id });
+      }
+    }
+
     await logAudit(tx, {
       userId: ctx.user.id,
       action: 'ASSIGNMENT_UPDATED',
@@ -121,10 +179,13 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
         weight: assignment.weight,
         isActive: assignment.isActive,
       },
-      newValues: body,
+      newValues: {
+        ...body,
+        rescoredSubmissions: rescored.length,
+      },
       ipAddress: ctx.ip,
       userAgent: ctx.ua,
     });
   });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, rescoredSubmissions: rescored.length });
 });

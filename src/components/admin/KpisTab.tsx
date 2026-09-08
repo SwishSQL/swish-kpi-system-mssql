@@ -5,11 +5,12 @@ import { api, fmt } from '@/lib/clientApi';
 import { useApp } from '@/components/AppContext';
 import BulkUpload from '@/components/admin/BulkUpload';
 
+const MATRIX_LABEL: Record<string, string> = { UNIT: 'Unit', TIME: 'Time', PERCENTAGE: 'Percentage' };
+
 const EMPTY = {
   kpiCode: '', kpiName: '', description: '', calculationMethod: '', varianceIndicator: 'U',
-  matrix: '', defaultTarget: '', targetText: '', defaultThreshold: '', defaultWeight: '', frequency: 'Monthly',
-  responsibleDepartmentId: '', responsibleDepartmentText: '', formOfSubmission: '', scoreCap: '100',
-  zeroActualIsPerfect: false,
+  matrixType: 'UNIT', defaultTarget: '', targetText: '', defaultThreshold: '', defaultWeight: '', frequency: 'Monthly',
+  responsibleDepartmentId: '', formOfSubmission: '',
 };
 
 export default function KpisTab() {
@@ -119,7 +120,6 @@ export default function KpisTab() {
       defaultTarget: form.defaultTarget === '' ? null : Number(form.defaultTarget),
       defaultThreshold: form.defaultThreshold === '' ? null : Number(form.defaultThreshold),
       defaultWeight: form.defaultWeight === '' ? null : Number(form.defaultWeight),
-      scoreCap: Number(form.scoreCap) || 100,
       responsibleDepartmentId: form.responsibleDepartmentId || null,
     };
     try {
@@ -265,7 +265,19 @@ export default function KpisTab() {
               <option value="D">D — Lower is better</option>
             </select>
           </div>
-          <div><label className="label">Matrix / Unit</label><input className="input w-full" value={form.matrix} onChange={(e) => setForm({ ...form, matrix: e.target.value })} /></div>
+          <div>
+            <label className="label">Matrix</label>
+            <select className="input w-full" value={form.matrixType} onChange={(e) => setForm({ ...form, matrixType: e.target.value })}>
+              <option value="UNIT">Unit</option>
+              <option value="TIME">Time</option>
+              <option value="PERCENTAGE">Percentage</option>
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {form.matrixType === 'PERCENTAGE'
+                ? 'The actual value entered IS the score (inverted automatically for a Lower-is-better KPI).'
+                : 'Scored as Actual vs Target, the way this system always has.'}
+            </p>
+          </div>
           <div>
             {/* This is the field the Assignments screen actually pre-fills
                 and scoring reads - it comes first, and says so, because the
@@ -298,11 +310,7 @@ export default function KpisTab() {
             </select>
           </div>
           <div>
-            <label className="label">Responsible Dept (as written)</label>
-            <input className="input w-full" placeholder="e.g. Central Kitchen / HR" value={form.responsibleDepartmentText} onChange={(e) => setForm({ ...form, responsibleDepartmentText: e.target.value })} />
-          </div>
-          <div>
-            <label className="label">{canManage ? 'Link to a department (optional)' : 'Department *'}</label>
+            <label className="label">{canManage ? 'Department (optional)' : 'Department *'}</label>
             <select
               className="input w-full"
               required={!canManage}
@@ -316,13 +324,6 @@ export default function KpisTab() {
             </select>
           </div>
           <div><label className="label">Form of Submission</label><input className="input w-full" value={form.formOfSubmission} onChange={(e) => setForm({ ...form, formOfSubmission: e.target.value })} /></div>
-          <div><label className="label">Score Cap %</label><input className="input w-full" type="number" min={100} value={form.scoreCap} onChange={(e) => setForm({ ...form, scoreCap: e.target.value })} /></div>
-          <div className="flex items-end pb-2">
-            <label className="text-xs text-slate-600 flex items-center gap-1.5">
-              <input type="checkbox" checked={form.zeroActualIsPerfect} onChange={(e) => setForm({ ...form, zeroActualIsPerfect: e.target.checked })} />
-              Zero actual = perfect (D KPIs)
-            </label>
-          </div>
           <div className="sm:col-span-2 lg:col-span-4 flex gap-2">
             <button className="btn-primary">{form.id ? 'Save Changes' : 'Create KPI'}</button>
             <button type="button" className="btn-secondary" onClick={() => setForm(null)}>Cancel</button>
@@ -343,7 +344,7 @@ export default function KpisTab() {
               <th className="table-th">Wt%</th>
               <th className="table-th">Freq</th>
               <th className="table-th">Responsible Dept</th>
-              <th className="table-th">Cap</th>
+              <th className="table-th">Matrix</th>
               <th className="table-th">Assigned</th>
               <th className="table-th">Status</th>
               {(canApprove || canPropose) && <th className="table-th">Approval</th>}
@@ -371,7 +372,7 @@ export default function KpisTab() {
                     {k.responsibleDepartmentText || k.responsibleDepartmentName || '—'}
                   </span>
                 </td>
-                <td className="table-td text-xs">{k.scoreCap}%</td>
+                <td className="table-td text-xs">{MATRIX_LABEL[k.matrixType] ?? k.matrixType}</td>
                 <td className="table-td">{k.assignmentCount}</td>
                 <td className="table-td">
                   <span className={`badge ${k.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
@@ -416,12 +417,11 @@ export default function KpisTab() {
                         setForm({
                           id: k.id, kpiCode: k.kpiCode, kpiName: k.kpiName, description: k.description,
                           calculationMethod: k.calculationMethod, varianceIndicator: k.varianceIndicator,
-                          matrix: k.matrix, defaultTarget: k.defaultTarget ?? '', targetText: k.targetText ?? '',
+                          matrixType: k.matrixType, defaultTarget: k.defaultTarget ?? '', targetText: k.targetText ?? '',
                           defaultThreshold: k.defaultThreshold ?? '',
                           defaultWeight: k.defaultWeight ?? '', frequency: k.frequency,
                           responsibleDepartmentId: k.responsibleDepartmentId ?? '',
-                          responsibleDepartmentText: k.responsibleDepartmentText ?? '', formOfSubmission: k.formOfSubmission,
-                          scoreCap: String(k.scoreCap), zeroActualIsPerfect: k.zeroActualIsPerfect,
+                          formOfSubmission: k.formOfSubmission,
                         })
                       }
                     >

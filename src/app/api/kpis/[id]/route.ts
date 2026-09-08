@@ -11,17 +11,14 @@ const patchSchema = z.object({
   description: z.string().max(3000).optional(),
   calculationMethod: z.string().max(2000).optional(),
   varianceIndicator: z.enum(['U', 'D']).optional(),
-  matrix: z.string().max(200).optional(),
+  matrixType: z.enum(['UNIT', 'TIME', 'PERCENTAGE']).optional(),
   defaultTarget: z.number().nullable().optional(),
   targetText: z.string().max(300).optional(),
-  responsibleDepartmentText: z.string().max(200).optional(),
   defaultThreshold: z.number().nullable().optional(),
   defaultWeight: z.number().min(0).max(100).nullable().optional(),
   frequency: z.string().max(50).optional(),
   responsibleDepartmentId: z.string().nullable().optional(),
   formOfSubmission: z.string().max(500).optional(),
-  scoreCap: z.number().min(100).max(1000).optional(),
-  zeroActualIsPerfect: z.boolean().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -102,7 +99,7 @@ export const PATCH = wrap(async (req: NextRequest, { params }: { params: { id: s
       oldValues: {
         kpiName: kpi.kpiName,
         varianceIndicator: kpi.varianceIndicator,
-        scoreCap: kpi.scoreCap,
+        matrixType: kpi.matrixType,
         isActive: kpi.isActive,
       },
       newValues: body,

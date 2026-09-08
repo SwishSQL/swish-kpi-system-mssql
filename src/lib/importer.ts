@@ -255,6 +255,25 @@ export function isPercentMatrix(matrix: string): boolean {
 }
 
 /**
+ * Same rule the 0004 migration used to backfill matrixType from the legacy
+ * free-text matrix column, so a KPI imported today from an Excel sheet lands
+ * in the same category as one already in the library would have. The
+ * template this reads is round-tripped from the library's own matrixType
+ * (see src/app/api/imports/template/route.ts), so the exact word - "Unit",
+ * "Time", "Percentage" - is checked first; the heuristic only runs on a
+ * sheet that still carries the old free-text labels. Anything not
+ * recognizably a percentage or a time/day/hour unit defaults to UNIT, which
+ * keeps the ordinary actual-vs-target ratio.
+ */
+export function guessMatrixType(matrix: string): 'UNIT' | 'TIME' | 'PERCENTAGE' {
+  const exact = matrix.trim().toUpperCase();
+  if (exact === 'UNIT' || exact === 'TIME' || exact === 'PERCENTAGE') return exact;
+  if (isPercentMatrix(matrix)) return 'PERCENTAGE';
+  if (/time|day|hour/i.test(matrix)) return 'TIME';
+  return 'UNIT';
+}
+
+/**
  * Percentage KPIs are stored as points 0-100, but workbooks mix 0.9 and 90 for
  * the same concept. A percent value of 0 < v <= 1 is a fraction and is scaled.
  */
@@ -708,6 +727,7 @@ export async function importKpiLibrary(sheet: SheetData, mapping: Record<string,
       calculationMethod: asText(row[mapping.calculationMethod]),
       varianceIndicator: parseVariance(asText(row[mapping.variance]) || 'U'),
       matrix,
+      matrixType: guessMatrixType(matrix),
       defaultTarget,
       // Wording is kept only when it says something the number cannot ("<=10%
       // over 60 days"). A bare "0.85" would otherwise be shown verbatim while
@@ -1033,7 +1053,7 @@ export async function importSubmissions(sheet: SheetData, mapping: Record<string
 
   const [allProfiles, allKpis, allAssignments, allPeriods, existingSubs] = await Promise.all([
     db.employeeProfile.findMany({ select: { id: true, employeeId: true } }),
-    db.kpi.findMany({ select: { id: true, kpiCode: true, varianceIndicator: true, scoreCap: true, zeroActualIsPerfect: true } }),
+    db.kpi.findMany({ select: { id: true, kpiCode: true, varianceIndicator: true, matrixType: true } }),
     db.kpiAssignment.findMany({ select: { id: true, employeeProfileId: true, kpiId: true, year: true, target: true, threshold: true, weight: true }, orderBy: { createdAt: 'desc' } }),
     db.submissionPeriod.findMany({ select: { year: true, month: true } }),
     db.kpiSubmission.findMany({ select: { id: true, kpiAssignmentId: true, submissionMonth: true } }),
@@ -1088,8 +1108,7 @@ export async function importSubmissions(sheet: SheetData, mapping: Record<string
         variance: kpi.varianceIndicator as 'U' | 'D',
         actual,
         target: assignment.target,
-        scoreCap: kpi.scoreCap,
-        zeroActualIsPerfect: kpi.zeroActualIsPerfect,
+        matrixType: kpi.matrixType as 'UNIT' | 'TIME' | 'PERCENTAGE',
       });
       const perf = performanceStatus(kpi.varianceIndicator as 'U' | 'D', actual, assignment.target, assignment.threshold);
       const attachmentsRef = asText(row[mapping.attachments]);

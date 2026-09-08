@@ -31,33 +31,44 @@ export function normalizeExcelValue(raw: number, isPercentFormatted: boolean): n
   return round2(raw);
 }
 
+export type MatrixType = 'UNIT' | 'TIME' | 'PERCENTAGE';
+
 export interface ScoreInput {
   variance: Variance;
   actual: number;
   target: number;
-  scoreCap?: number | null;
-  zeroActualIsPerfect?: boolean;
+  matrixType?: MatrixType;
 }
 
 /**
- * U (higher is better): Score = Actual / Target * 100
- * D (lower is better):  Score = Target / Actual * 100
- * D with Actual = 0: 100 when zeroActualIsPerfect, otherwise capped best score.
- * Scores are clamped to [0, scoreCap] (default cap 100).
+ * A Percentage-matrix KPI's actual value already IS a percentage of
+ * completion or quality, so the score is read off it directly rather than
+ * divided by a target - 92% accuracy scores 92, not "92 vs a 95 target".
+ * D-type (lower is better) is inverted so the direction still means what it
+ * says: an Abandoned Call Rate of 2% (excellent) scores 98, not 2 - a KPI
+ * marked "lower is better" must not reward a lower score for better results.
+ *
+ * Unit/Time KPIs keep the ratio this system has always used:
+ *   U (higher is better): Score = Actual / Target * 100
+ *   D (lower is better):  Score = Target / Actual * 100
+ *   D with Actual = 0: scores 100 (nothing recorded against a lower-is-better
+ *   measure reads as a perfect result).
+ * Scores are clamped to [0, 100].
  */
 export function computeScore(input: ScoreInput): number {
-  const cap = input.scoreCap && input.scoreCap > 0 ? input.scoreCap : 100;
   let score: number;
 
-  if (input.variance === 'U') {
+  if (input.matrixType === 'PERCENTAGE') {
+    score = input.variance === 'U' ? input.actual : 100 - input.actual;
+  } else if (input.variance === 'U') {
     if (input.target === 0) {
-      score = input.actual >= 0 ? cap : 0;
+      score = input.actual >= 0 ? 100 : 0;
     } else {
       score = (input.actual / input.target) * 100;
     }
   } else {
     if (input.actual === 0) {
-      score = input.zeroActualIsPerfect ? 100 : cap;
+      score = 100;
     } else if (input.target === 0) {
       score = 0;
     } else {
@@ -66,7 +77,7 @@ export function computeScore(input: ScoreInput): number {
   }
 
   if (!Number.isFinite(score) || score < 0) score = 0;
-  if (score > cap) score = cap;
+  if (score > 100) score = 100;
   return round2(score);
 }
 

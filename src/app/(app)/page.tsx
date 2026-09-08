@@ -30,6 +30,11 @@ const LEVEL_LABEL: Record<string, string> = {
   DEPARTMENT_MANAGER: 'Approve as department manager',
   COMPLIANCE: 'Approve as compliance',
 };
+const MATRIX_LABEL: Record<string, string> = {
+  UNIT: 'Unit',
+  TIME: 'Time',
+  PERCENTAGE: 'Percentage',
+};
 
 const SUB_BADGE: Record<string, string> = {
   NOT_STARTED: 'bg-slate-100 text-slate-500',
@@ -41,18 +46,21 @@ const SUB_BADGE: Record<string, string> = {
   REOPENED: 'bg-amber-100 text-amber-700',
 };
 
+// Mirrors computeScore() in src/lib/scoring.ts, for a live "expected score"
+// while the user is still typing - keep the two in step.
 function previewScore(row: any, actualStr: string): { score: number; perf: string } | null {
   const actual = Number(actualStr);
   if (actualStr === '' || !Number.isFinite(actual)) return null;
-  const cap = row.kpi.scoreCap > 0 ? row.kpi.scoreCap : 100;
   let score: number;
-  if (row.kpi.varianceIndicator === 'U') {
-    score = row.target === 0 ? cap : (actual / row.target) * 100;
+  if (row.kpi.matrixType === 'PERCENTAGE') {
+    score = row.kpi.varianceIndicator === 'U' ? actual : 100 - actual;
+  } else if (row.kpi.varianceIndicator === 'U') {
+    score = row.target === 0 ? 100 : (actual / row.target) * 100;
   } else {
-    if (actual === 0) score = row.kpi.zeroActualIsPerfect ? 100 : cap;
+    if (actual === 0) score = 100;
     else score = row.target === 0 ? 0 : (row.target / actual) * 100;
   }
-  score = Math.max(0, Math.min(cap, score));
+  score = Math.max(0, Math.min(100, score));
   let perf: string;
   if (row.kpi.varianceIndicator === 'U') {
     perf = actual >= row.target ? 'TARGET_ACHIEVED' : actual >= row.threshold ? 'BETWEEN_TARGET_AND_THRESHOLD' : 'BELOW_THRESHOLD';
@@ -1291,12 +1299,9 @@ function RowDetails({
       <div className="space-y-1.5">
         <div><span className="font-semibold">Description:</span> {row.kpi.description || '—'}</div>
         <div><span className="font-semibold">Calculation:</span> {row.kpi.calculationMethod || '—'}</div>
-        <div><span className="font-semibold">Matrix:</span> {row.kpi.matrix || '—'}</div>
+        <div><span className="font-semibold">Matrix:</span> {MATRIX_LABEL[row.kpi.matrixType] ?? row.kpi.matrixType}</div>
         <div><span className="font-semibold">Frequency:</span> {row.frequency}</div>
         <div><span className="font-semibold">Form of submission:</span> {row.formOfSubmission || '—'}</div>
-        {row.kpi.scoreCap > 100 && (
-          <div><span className="font-semibold">Score cap:</span> {row.kpi.scoreCap}%</div>
-        )}
         {row.submission && (
           <>
             <div>

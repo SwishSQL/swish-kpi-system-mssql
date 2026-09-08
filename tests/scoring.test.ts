@@ -25,34 +25,52 @@ describe('percentage normalization', () => {
   });
 });
 
-describe('U scoring (higher is better)', () => {
+describe('U scoring (higher is better), Unit/Time matrix', () => {
   it('Actual/Target*100', () => {
     expect(computeScore({ variance: 'U', actual: 79, target: 90 })).toBe(87.78);
   });
-  it('caps at 100 by default', () => {
+  it('caps at 100', () => {
     expect(computeScore({ variance: 'U', actual: 120, target: 100 })).toBe(100);
-  });
-  it('honours a higher score cap', () => {
-    expect(computeScore({ variance: 'U', actual: 120, target: 100, scoreCap: 150 })).toBe(120);
   });
   it('never goes below 0', () => {
     expect(computeScore({ variance: 'U', actual: -5, target: 100 })).toBe(0);
   });
+  it('is unaffected by matrixType when it is Unit or Time', () => {
+    expect(computeScore({ variance: 'U', actual: 79, target: 90, matrixType: 'UNIT' })).toBe(87.78);
+    expect(computeScore({ variance: 'U', actual: 79, target: 90, matrixType: 'TIME' })).toBe(87.78);
+  });
 });
 
-describe('D scoring (lower is better)', () => {
+describe('D scoring (lower is better), Unit/Time matrix', () => {
   it('Target/Actual*100', () => {
     expect(computeScore({ variance: 'D', actual: 6, target: 4 })).toBe(66.67);
   });
-  it('zero actual = 100 when zeroActualIsPerfect', () => {
-    expect(computeScore({ variance: 'D', actual: 0, target: 4, zeroActualIsPerfect: true })).toBe(100);
-  });
-  it('zero actual = capped best score otherwise', () => {
+  it('zero actual always reads as a perfect result', () => {
     expect(computeScore({ variance: 'D', actual: 0, target: 4 })).toBe(100);
-    expect(computeScore({ variance: 'D', actual: 0, target: 4, scoreCap: 120 })).toBe(120);
+    expect(computeScore({ variance: 'D', actual: 0, target: 4, matrixType: 'TIME' })).toBe(100);
   });
-  it('caps overshoot', () => {
+  it('caps overshoot at 100', () => {
     expect(computeScore({ variance: 'D', actual: 1, target: 4 })).toBe(100);
+  });
+});
+
+// A department head can propose a KPI as Percentage-matrix; the actual value
+// IS the score rather than a ratio against target.
+describe('Percentage-matrix scoring', () => {
+  it('U: the actual value is the score directly, target is not involved', () => {
+    expect(computeScore({ variance: 'U', actual: 92, target: 95, matrixType: 'PERCENTAGE' })).toBe(92);
+    // Even a wildly different target changes nothing - this is the point.
+    expect(computeScore({ variance: 'U', actual: 92, target: 10, matrixType: 'PERCENTAGE' })).toBe(92);
+  });
+  it('D: inverted, so a lower (better) rate scores higher', () => {
+    // Abandoned Call Rate 2% (excellent) -> 98; 40% (bad) -> 60.
+    expect(computeScore({ variance: 'D', actual: 2, target: 5, matrixType: 'PERCENTAGE' })).toBe(98);
+    expect(computeScore({ variance: 'D', actual: 40, target: 5, matrixType: 'PERCENTAGE' })).toBe(60);
+  });
+  it('clamps to [0, 100] even on an out-of-range actual', () => {
+    expect(computeScore({ variance: 'U', actual: 130, target: 95, matrixType: 'PERCENTAGE' })).toBe(100);
+    expect(computeScore({ variance: 'D', actual: -5, target: 5, matrixType: 'PERCENTAGE' })).toBe(100);
+    expect(computeScore({ variance: 'D', actual: 130, target: 5, matrixType: 'PERCENTAGE' })).toBe(0);
   });
 });
 
