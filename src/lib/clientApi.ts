@@ -51,6 +51,16 @@ export function prevMonthKey(monthKey: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * The month the Submissions/Dashboard screens open on for everyone, by
+ * default: last month, not the current one - the current month's KPIs are
+ * usually still being collected, and landing there by default was how
+ * results kept getting entered under the wrong month.
+ */
+export function defaultMonthKey(): string {
+  return prevMonthKey(monthKeyNow());
+}
+
 export function fmt(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined) return '—';
   return n.toFixed(digits).replace(/\.?0+$/, '');

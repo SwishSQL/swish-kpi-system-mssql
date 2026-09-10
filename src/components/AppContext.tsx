@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, monthKeyNow, prevMonthKey } from '@/lib/clientApi';
+import { api, monthKeyNow, prevMonthKey, defaultMonthKey } from '@/lib/clientApi';
 
 export interface Me {
   user: {
@@ -55,7 +55,11 @@ export function useApp(): AppState {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
-  const [month, setMonth] = useState(monthKeyNow());
+  // Last month, not the current one - see defaultMonthKey(). The effect below
+  // still nudges staff with a banner if even last month is unrecorded; a
+  // direct link (?month=...) always overrides this once /auth/me resolves,
+  // same as before.
+  const [month, setMonth] = useState(defaultMonthKey());
   const [departmentId, setDepartmentId] = useState('');
   const [q, setQ] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -73,11 +77,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         setMe(res);
 
-        // Staff kept landing on the current, still-open month by default and
-        // entering last month's results there by mistake. A reviewer or admin
-        // is left on the current month - they are usually chasing this month's
-        // stragglers, not catching up their own numbers - and a direct link
-        // (a notification, a bookmark) always wins over this guess.
+        // Everyone already opens on last month by default (defaultMonthKey()
+        // above) - this only decides whether staff still get the "you haven't
+        // recorded last month" banner (page.tsx) if they end up on the current
+        // month anyway (a query param, or switching manually). Reviewers/admins
+        // don't get nudged - they're usually chasing this month's stragglers,
+        // not catching up their own numbers - and a direct link (a
+        // notification, a bookmark) always wins over this guess.
         const isReviewer =
           res.hasReports ||
           res.managedDepartmentIds.length > 0 ||
