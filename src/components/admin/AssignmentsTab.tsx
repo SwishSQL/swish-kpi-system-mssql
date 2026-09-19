@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, fmt } from '@/lib/clientApi';
 import { useApp } from '@/components/AppContext';
 import BulkUpload from '@/components/admin/BulkUpload';
@@ -20,7 +20,14 @@ export default function AssignmentsTab() {
   const [editReviewBusy, setEditReviewBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [kpis, setKpis] = useState<any[]>([]);
-  const [form, setForm] = useState({ employeeId: '', kpiId: '', target: '', threshold: '', weight: '', frequency: 'Monthly' });
+  // One employee, any number of KPIs at once: picked is keyed by KPI id, and
+  // each entry carries that KPI's own target/threshold/weight, since weights
+  // have to add up to 100 across the employee and differ per KPI.
+  const [employeeId, setEmployeeId] = useState('');
+  const [picked, setPicked] = useState<Record<string, { target: string; threshold: string; weight: string }>>({});
+  const [pickerQ, setPickerQ] = useState('');
+  const [frequency, setFrequency] = useState(''); // '' = keep each KPI's own
+  const [assigning, setAssigning] = useState(false);
   const [edit, setEdit] = useState<any>(null);
   const [deleting, setDeleting] = useState<any>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -68,27 +75,119 @@ export default function AssignmentsTab() {
       .catch(() => {});
   }, []);
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg('');
-    try {
-      await api('/api/assignments', {
-        body: {
-          employeeId: form.employeeId.trim(),
-          kpiId: form.kpiId,
-          year,
-          target: Number(form.target),
-          threshold: Number(form.threshold || form.target),
-          weight: Number(form.weight),
-          frequency: form.frequency,
-        },
+  const kpiById = useMemo(() => new Map(kpis.map((k) => [k.id, k])), [kpis]);
+  const deptName = departments.find((d: any) => d.id === deptFilter)?.name ?? '';
+
+  /**
+   * With a department picked, its own KPIs come first and the ones tied to no
+   * department at all follow underneath - more than half the library has only
+   * a free-text owner ("Production", "IT / Finance") and no real department
+   * row, so hiding those outright would put them out of reach. Another
+   * department's KPIs never show while a department is picked.
+   */
+  const pickerGroups = useMemo(() => {
+    const term = pickerQ.trim().toLowerCase();
+    const matches = (k: any) =>
+      !term || k.kpiCode.toLowerCase().includes(term) || k.kpiName.toLowerCase().includes(term);
+    if (!deptFilter) return [{ label: 'All KPIs', items: kpis.filter(matches) }];
+    return [
+      { label: deptName || 'This department', items: kpis.filter((k) => k.responsibleDepartmentId === deptFilter).filter(matches) },
+      { label: 'No department', items: kpis.filter((k) => !k.responsibleDepartmentId).filter(matches) },
+    ];
+  }, [kpis, deptFilter, deptName, pickerQ]);
+
+  function togglePick(k: any) {
+    setPicked((prev) => {
+      const next = { ...prev };
+      if (next[k.id]) delete next[k.id];
+      else
+        next[k.id] = {
+          target: k.defaultTarget != null ? String(k.defaultTarget) : '',
+          threshold: k.defaultThreshold != null ? String(k.defaultThreshold) : '',
+          weight: k.defaultWeight != null ? String(k.defaultWeight) : '',
+        };
+      return next;
+    });
+  }
+
+  /** Weights have to total 100, and only 77 KPIs carry a default one. */
+  function splitEvenly() {
+    const ids = Object.keys(picked);
+    if (!ids.length) return;
+    const each = Math.round((100 / ids.length) * 100) / 100;
+    setPicked((prev) => {
+      const next = { ...prev };
+      ids.forEach((id, i) => {
+        const w = i === ids.length - 1 ? Math.round((100 - each * (ids.length - 1)) * 100) / 100 : each;
+        next[id] = { ...next[id], weight: String(w) };
       });
-      setShowCreate(false);
-      setForm({ employeeId: '', kpiId: '', target: '', threshold: '', weight: '', frequency: 'Monthly' });
-      load();
-    } catch (err: any) {
-      setMsg(err.message);
+      return next;
+    });
+  }
+
+  /**
+   * One request per KPI rather than a bulk endpoint, so every guard the single
+   * assign already applies still runs per row - duplicate year, rejected KPI,
+   * a department head's own-department limit - and each failure is reported
+   * against its own KPI code. Whatever succeeded is unpicked; whatever failed
+   * stays selected so it can be corrected and sent again.
+   */
+  async function assignAll(e: React.FormEvent) {
+    e.preventDefault();
+    const ids = Object.keys(picked);
+    if (!ids.length) {
+      setMsg('Pick at least one KPI first.');
+      return;
     }
+    setAssigning(true);
+    setMsg('');
+    const done: string[] = [];
+    const failed: string[] = [];
+    const failedIds = new Set<string>();
+    for (const id of ids) {
+      const k = kpiById.get(id);
+      const v = picked[id];
+      try {
+        await api('/api/assignments', {
+          body: {
+            employeeId: employeeId.trim(),
+            kpiId: id,
+            year,
+            target: Number(v.target),
+            threshold: Number(v.threshold || v.target),
+            weight: Number(v.weight),
+            ...(frequency ? { frequency } : {}),
+          },
+        });
+        done.push(k?.kpiCode ?? id);
+      } catch (err: any) {
+        failed.push(`${k?.kpiCode ?? id}: ${err.message}`);
+        failedIds.add(id);
+      }
+    }
+    setAssigning(false);
+    if (done.length) {
+      setPicked((prev) => {
+        const next = { ...prev };
+        for (const id of ids) if (!failedIds.has(id)) delete next[id];
+        return next;
+      });
+    }
+    setMsg(
+      [
+        done.length ? `✔ Assigned ${done.length} KPI${done.length === 1 ? '' : 's'} to ${employeeId.trim()}: ${done.join(', ')}.` : '',
+        failed.length ? `Not assigned — ${failed.join(' | ')}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+    );
+    if (!failed.length) {
+      setShowCreate(false);
+      setEmployeeId('');
+      setPickerQ('');
+      setFrequency('');
+    }
+    load();
   }
 
   // A department head's edit is already live (see the PATCH handler) - approve
@@ -155,42 +254,156 @@ export default function AssignmentsTab() {
           </button>
         )}
       </div>
-      {msg && <div className="text-sm px-3 py-2 rounded-md border bg-red-50 border-red-200 text-red-700">{msg}</div>}
+      {msg && (
+        <div
+          className={`text-sm px-3 py-2 rounded-md border ${
+            msg.startsWith('✔') ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700'
+          }`}
+        >
+          {msg}
+        </div>
+      )}
 
       {showCreate && (
-        <form onSubmit={create} className="card p-4 flex flex-wrap items-end gap-3">
-          <div><label className="label">Employee ID *</label><input className="input" required value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })} /></div>
-          <div>
-            <label className="label">KPI *</label>
-            <select className="input w-72" required value={form.kpiId} onChange={(e) => {
-              const k = kpis.find((x) => x.id === e.target.value);
-              setForm({
-                ...form, kpiId: e.target.value,
-                target: k?.defaultTarget != null ? String(k.defaultTarget) : form.target,
-                threshold: k?.defaultThreshold != null ? String(k.defaultThreshold) : form.threshold,
-                weight: k?.defaultWeight != null ? String(k.defaultWeight) : form.weight,
-                frequency: k?.frequency ?? form.frequency,
-              });
-            }}>
-              <option value="">— select —</option>
-              {kpis.map((k) => (
-                <option key={k.id} value={k.id}>
-                  {k.kpiCode} — {k.kpiName}
-                  {k.approvalStatus === 'PENDING' ? ' (awaiting approval)' : ''}
-                </option>
-              ))}
-            </select>
+        <form onSubmit={assignAll} className="card p-4 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="label">Employee ID *</label>
+              <input className="input" required value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} />
+            </div>
+            <div>
+              <label className="label">Frequency</label>
+              <select className="input" value={frequency} onChange={(e) => setFrequency(e.target.value)}>
+                <option value="">Each KPI&apos;s own</option>
+                {['Monthly', 'Quarterly', 'Semi-Annual', 'Annual'].map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+            <div className="text-[11.5px] text-slate-400 pb-2">
+              {deptFilter
+                ? `Showing ${deptName} KPIs, then ones with no department — pick as many as you need.`
+                : 'Pick as many KPIs as you need; filter by department above to narrow the list.'}
+            </div>
           </div>
-          <div><label className="label">Target *</label><input className="input w-24" type="number" step="any" required value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} /></div>
-          <div><label className="label">Threshold</label><input className="input w-24" type="number" step="any" value={form.threshold} onChange={(e) => setForm({ ...form, threshold: e.target.value })} /></div>
-          <div><label className="label">Weight % *</label><input className="input w-24" type="number" step="any" required value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} /></div>
+
           <div>
-            <label className="label">Frequency</label>
-            <select className="input" value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}>
-              {['Monthly', 'Quarterly', 'Semi-Annual', 'Annual'].map((f) => <option key={f}>{f}</option>)}
-            </select>
+            <label className="label">KPIs *</label>
+            <input
+              className="input w-full"
+              placeholder="Search KPI code or name…"
+              value={pickerQ}
+              onChange={(e) => setPickerQ(e.target.value)}
+            />
+            <div className="mt-1.5 max-h-56 overflow-y-auto rounded-md border border-slate-200 divide-y divide-slate-100">
+              {pickerGroups.every((g) => g.items.length === 0) && (
+                <div className="px-3 py-3 text-[13px] text-slate-400">No KPI matches that search.</div>
+              )}
+              {pickerGroups.map((g) =>
+                g.items.length === 0 ? null : (
+                  <div key={g.label}>
+                    <div className="px-3 py-1.5 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sticky top-0">
+                      {g.label} · {g.items.length}
+                    </div>
+                    {g.items.map((k: any) => (
+                      <label
+                        key={k.id}
+                        className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-[13px]"
+                      >
+                        <input type="checkbox" checked={!!picked[k.id]} onChange={() => togglePick(k)} />
+                        <span className="font-mono text-[11px] text-slate-400 w-16 shrink-0">{k.kpiCode}</span>
+                        <span className="truncate flex-1">{k.kpiName}</span>
+                        {/* Which department owns it only needs saying when the
+                            list isn't already narrowed to one. */}
+                        {!deptFilter && (k.responsibleDepartmentName || k.responsibleDepartmentText) && (
+                          <span className="text-[11px] text-slate-400 shrink-0 max-w-[140px] truncate">
+                            {k.responsibleDepartmentName || k.responsibleDepartmentText}
+                          </span>
+                        )}
+                        {k.approvalStatus === 'PENDING' && (
+                          <span className="badge bg-amber-100 text-amber-700 shrink-0">Awaiting approval</span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )
+              )}
+            </div>
           </div>
-          <button className="btn-primary">Assign</button>
+
+          {Object.keys(picked).length > 0 && (
+            <div className="rounded-md border border-slate-200">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Selected · {Object.keys(picked).length}
+                </span>
+                <span className="flex items-center gap-2">
+                  <span className="text-[11.5px] text-slate-500">
+                    Weights total{' '}
+                    <b>
+                      {fmt(
+                        Object.values(picked).reduce((s, v) => s + (Number(v.weight) || 0), 0)
+                      )}
+                      %
+                    </b>
+                  </span>
+                  <button type="button" className="btn-secondary btn-xs" onClick={splitEvenly}>
+                    Split 100% evenly
+                  </button>
+                </span>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {Object.keys(picked).map((id) => {
+                  const k = kpiById.get(id);
+                  const v = picked[id];
+                  const set = (patch: Partial<typeof v>) =>
+                    setPicked((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+                  return (
+                    <div key={id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                      <span className="font-mono text-[11px] text-slate-400 w-16 shrink-0">{k?.kpiCode}</span>
+                      <span className="text-[13px] truncate flex-1 min-w-[140px]">{k?.kpiName}</span>
+                      <label className="text-[11px] text-slate-500">
+                        Target *
+                        <input
+                          className="input w-20 ml-1" type="number" step="any" required
+                          value={v.target} onChange={(e) => set({ target: e.target.value })}
+                        />
+                      </label>
+                      <label className="text-[11px] text-slate-500">
+                        Thresh.
+                        <input
+                          className="input w-20 ml-1" type="number" step="any"
+                          value={v.threshold} onChange={(e) => set({ threshold: e.target.value })}
+                        />
+                      </label>
+                      <label className="text-[11px] text-slate-500">
+                        Wt% *
+                        <input
+                          className="input w-20 ml-1" type="number" step="any" required
+                          value={v.weight} onChange={(e) => set({ weight: e.target.value })}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="text-slate-400 hover:text-red-600 px-1"
+                        title="Remove from the list"
+                        onClick={() => setPicked((prev) => { const next = { ...prev }; delete next[id]; return next; })}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button className="btn-primary" disabled={assigning || Object.keys(picked).length === 0}>
+              {assigning ? 'Assigning…' : `Assign ${Object.keys(picked).length || ''} KPI${Object.keys(picked).length === 1 ? '' : 's'}`}
+            </button>
+            <button type="button" className="btn-secondary" onClick={() => { setShowCreate(false); setPicked({}); setPickerQ(''); }}>
+              Cancel
+            </button>
+          </div>
         </form>
       )}
 
