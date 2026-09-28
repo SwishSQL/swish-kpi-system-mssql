@@ -19,5 +19,5 @@ RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY --from=builder /app ./
-EXPOSE 3000
+EXPOSE 6019
 CMD ["sh", "-c", "npx prisma migrate deploy && npx tsx prisma/seed.ts && npm run start"]

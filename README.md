@@ -42,6 +42,12 @@ npx tsx prisma/seed.ts      # permissions, roles, initial admin
 npm run build && npm start
 ```
 
+The app listens on **port 6019** — the port assigned to this project on the
+company server. It is set with `-p 6019` in the `start`/`serve` scripts rather
+than through an environment variable, because `next start` resolves its port
+before it loads `.env`, so a `PORT` entry there would be silently ignored. To
+run on a different port: `npx next start -p <port>`.
+
 ## Core rules
 
 | Rule | Implementation |
