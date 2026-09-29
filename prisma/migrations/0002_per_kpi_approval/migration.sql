@@ -20,12 +20,14 @@ CREATE NONCLUSTERED INDEX [ApprovalEvent_kpiSubmissionId_idx] ON [dbo].[Approval
 -- Backfill: existing KPIs inherit the stage their employee-month had reached,
 -- so nothing in flight changes position. Rows with no approval record keep the
 -- default, which is where a fresh submission starts anyway.
+EXEC sp_executesql N'
 UPDATE s
 SET s.[stage] = a.[stage]
 FROM [dbo].[KpiSubmission] s
 INNER JOIN [dbo].[SubmissionApproval] a
   ON a.[employeeProfileId] = s.[employeeProfileId]
  AND a.[submissionMonth] = s.[submissionMonth];
+';
 
 COMMIT TRAN;
 
