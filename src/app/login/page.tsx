@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/clientApi';
 
 export default function LoginPage() {
@@ -9,6 +9,24 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // A SWiSH World handoff that could not sign the person in lands here with
+  // ?sso=<reason>&email=... (src/app/api/sso/handoff/route.ts) - explain why.
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sso = params.get('sso');
+    if (!sso) return;
+    const who = params.get('email') || 'your SWiSH World e-mail';
+    const messages: Record<string, string> = {
+      'no-user': `No KPI account exists for ${who}. Sign in with your KPI e-mail and password, or ask IT to create one.`,
+      disabled: `The KPI account for ${who} is inactive or temporarily locked. Ask IT to re-enable it.`,
+      ambiguous: `More than one KPI account uses ${who}. Ask IT to tidy the accounts, then try again.`,
+      'mapping-refused': `The SWiSH World identity mapping for ${who} points at an account it may not sign in to. Sign in with your KPI e-mail and password.`,
+    };
+    setNotice(messages[sso] || 'SWiSH World could not sign you in automatically. Please sign in below.');
+    if (params.get('email')) setEmail(params.get('email') as string);
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -104,6 +122,12 @@ export default function LoginPage() {
 
           <h2 className="text-[26px] font-bold text-slate-900 tracking-tight">Welcome back</h2>
           <p className="text-sm text-slate-500 mt-1.5 mb-8">Sign in with your work email to continue.</p>
+
+          {notice && (
+            <div className="mb-5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[13px] px-3.5 py-3">
+              {notice}
+            </div>
+          )}
 
           <form onSubmit={submit} className="space-y-5">
             <div>
