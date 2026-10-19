@@ -86,6 +86,9 @@ export default function SubmissionsPage() {
   const [tabs, setTabs] = useState<any[]>([]);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  // Which month/filters/page the data on screen belongs to, so a refresh of
+  // the same view can be told apart from a move to a different one.
+  const viewKeyRef = useRef('');
   // Employee a notification asked us to open, held until the data arrives.
   const [focusId, setFocusId] = useState<string | null>(null);
   const focusHandled = useRef(false);
@@ -118,7 +121,16 @@ export default function SubmissionsPage() {
   }, []);
 
   const load = useCallback(() => {
-    setLoading(true);
+    // Approving, submitting or clearing re-runs this with the filters
+    // unchanged. Only a genuinely different view may blank the screen and
+    // re-decide which cards are open: doing it on every refresh collapsed
+    // everyone's KPI list and, because the page suddenly got shorter, threw
+    // the reader back to the top right after they approved a single row.
+    const viewKey = [month, q, deptTab, statusFilter, perfFilter, page, pageSize].join('|');
+    const sameView = viewKeyRef.current === viewKey;
+    viewKeyRef.current = viewKey;
+
+    if (!sameView) setLoading(true);
     const params = new URLSearchParams({ month, page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (deptTab) params.set('departmentId', deptTab);
@@ -129,13 +141,17 @@ export default function SubmissionsPage() {
         setData(res);
         setError('');
         if (res.departmentTabs) setTabs(res.departmentTabs);
-        // A single employee — someone viewing their own KPIs — should not
-        // have to click to reach the only card on the page.
-        setOpenIds(res.employees?.length === 1 ? new Set([res.employees[0].profile.id]) : new Set());
-        focusHandled.current = false;
+        if (!sameView) {
+          // A single employee — someone viewing their own KPIs — should not
+          // have to click to reach the only card on the page.
+          setOpenIds(res.employees?.length === 1 ? new Set([res.employees[0].profile.id]) : new Set());
+          focusHandled.current = false;
+        }
       })
       .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!sameView) setLoading(false);
+      });
   }, [month, q, deptTab, statusFilter, perfFilter, page, pageSize]);
 
   // The topbar's department picker and the tab strip are the same choice shown
