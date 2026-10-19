@@ -113,12 +113,71 @@ export const GET = wrap(async (req: NextRequest) => {
     db.department.findMany({ select: { id: true, name: true } }),
   ]);
   const nameById = new Map(deptNames.map((d) => [d.id, d.name]));
+
+  // The dot on each tab: green when everyone who has KPIs due has submitted
+  // all of them, red when nobody has submitted anything, orange in between.
+  // Deliberately not narrowed by the search/status filters the counts follow -
+  // picking "Not started" must not turn every department red. Someone on
+  // vacation has nothing due, so they drop out of the tally rather than
+  // counting as a miss.
+  const statusProfiles = await db.employeeProfile.findMany({
+    where: {
+      isActive: true,
+      assignments: { some: { year: viewedYear, isActive: true } },
+      ...(viewScope.employeeProfileIds ? { id: { in: viewScope.employeeProfileIds } } : {}),
+    },
+    select: { id: true, departmentId: true },
+  });
+  const statusIds = statusProfiles.map((p) => p.id);
+  const [statusDue, statusSubs] = await Promise.all([
+    getDueAssignments(monthKey, statusIds),
+    db.kpiSubmission.findMany({
+      where: {
+        submissionMonth: monthKey,
+        submissionStatus: { not: 'DRAFT' },
+        employeeProfileId: { in: statusIds },
+      },
+      select: { kpiAssignmentId: true },
+    }),
+  ]);
+  const submittedAssignmentIds = new Set(statusSubs.map((s) => s.kpiAssignmentId));
+  const dueIdsByEmployee = new Map<string, string[]>();
+  for (const a of statusDue) {
+    const list = dueIdsByEmployee.get(a.employeeProfileId) ?? [];
+    list.push(a.id);
+    dueIdsByEmployee.set(a.employeeProfileId, list);
+  }
+  const deptOfProfile = new Map(statusProfiles.map((p) => [p.id, p.departmentId]));
+  const deptTally = new Map<string | null, { total: number; complete: number; started: number }>();
+  for (const [pid, dueIds] of dueIdsByEmployee) {
+    const key = deptOfProfile.get(pid) ?? null;
+    const t = deptTally.get(key) ?? { total: 0, complete: 0, started: 0 };
+    const done = dueIds.filter((id) => submittedAssignmentIds.has(id)).length;
+    t.total++;
+    if (done === dueIds.length) t.complete++;
+    if (done > 0) t.started++;
+    deptTally.set(key, t);
+  }
+
   const departmentTabs = deptCounts
-    .map((d) => ({
-      id: d.departmentId,
-      name: d.departmentId ? (nameById.get(d.departmentId) ?? 'Unknown') : 'No department',
-      employees: d._count._all,
-    }))
+    .map((d) => {
+      const t = deptTally.get(d.departmentId);
+      return {
+        id: d.departmentId,
+        name: d.departmentId ? (nameById.get(d.departmentId) ?? 'Unknown') : 'No department',
+        employees: d._count._all,
+        // null = nobody in it has anything due this month, so no verdict.
+        submissionStatus: !t
+          ? null
+          : t.complete === t.total
+            ? 'ALL'
+            : t.started === 0
+              ? 'NONE'
+              : 'PARTIAL',
+        submittedCount: t?.complete ?? 0,
+        dueCount: t?.total ?? 0,
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const totalEmployees = await db.employeeProfile.count({ where: employeeWhere });

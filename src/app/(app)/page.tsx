@@ -263,6 +263,9 @@ export default function SubmissionsPage() {
                 count={t.employees}
                 active={deptTab === t.id}
                 onClick={() => setDeptTab(t.id ?? '')}
+                status={t.submissionStatus}
+                submitted={t.submittedCount}
+                due={t.dueCount}
               />
             ))}
           </div>
@@ -370,29 +373,44 @@ export default function SubmissionsPage() {
 }
 
 /** One department in the tab strip, with how many people sit behind it. */
+// Green = everyone submitted, orange = some have, red = nobody has.
+const SUBMISSION_DOT: Record<string, { cls: string; text: string }> = {
+  ALL: { cls: 'bg-emerald-500', text: 'Everyone has submitted' },
+  PARTIAL: { cls: 'bg-orange-500', text: 'Some have submitted, some have not' },
+  NONE: { cls: 'bg-red-500', text: 'Nobody has submitted yet' },
+};
+
 function DeptTab({
   label,
   count,
   active,
   onClick,
+  status = null,
+  submitted = 0,
+  due = 0,
 }: {
   label: string;
   count: number;
   active: boolean;
   onClick: () => void;
+  status?: string | null;
+  submitted?: number;
+  due?: number;
 }) {
+  const dot = status ? SUBMISSION_DOT[status] : null;
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      title={label}
+      title={dot ? `${label} — ${dot.text} (${submitted} of ${due})` : label}
       className={`group shrink-0 flex items-center gap-1.5 px-3 py-2 text-[12px] font-medium whitespace-nowrap border-b-2 transition-colors ${
         active
           ? 'border-brand-600 text-brand-700'
           : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
       }`}
     >
+      {dot && <span className={`h-2 w-2 shrink-0 rounded-full ${dot.cls}`} aria-label={dot.text} />}
       <span className="max-w-[190px] truncate">{label}</span>
       <span
         className={`rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums ${
