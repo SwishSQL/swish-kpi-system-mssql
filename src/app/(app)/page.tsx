@@ -1044,7 +1044,10 @@ function EmployeeCard({
                 <span className={`badge ${SUB_BADGE[vm.subStatus] ?? 'bg-slate-100 text-slate-500'}`}>
                   {vm.subStatus.replace(/_/g, ' ')}
                 </span>
-                {row.submission?.stage && (
+                {/* A DRAFT carries the default PENDING_LINE_MANAGER stage but
+                    is not in the chain yet, so showing "Awaiting line manager"
+                    beside it claimed a review that nobody owes. */}
+                {row.submission?.stage && vm.subStatus !== 'DRAFT' && (
                   <span className={`badge ${STAGE_BADGE[row.submission.stage] ?? 'bg-slate-100 text-slate-600'}`}>
                     {row.submission.stageLabel}
                   </span>

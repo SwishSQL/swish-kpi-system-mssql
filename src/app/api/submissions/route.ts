@@ -238,9 +238,20 @@ export const GET = wrap(async (req: NextRequest) => {
               // row's actions are judged against its stage, not the month's.
               stage: sub.stage,
               stageLabel: STAGE_LABEL[sub.stage as Stage],
-              canApproveAs: actionableLevel(authority.levels, sub.stage as Stage),
+              // A DRAFT is not in the chain yet - attaching a file creates one
+              // with a zero actual and the default PENDING_LINE_MANAGER stage,
+              // which made the row advertise an Approve button the approve
+              // route then refused with "nothing to approve". Offer nothing
+              // until it has actually been submitted.
+              canApproveAs:
+                sub.submissionStatus === 'DRAFT'
+                  ? null
+                  : actionableLevel(authority.levels, sub.stage as Stage),
               // Sending a KPI back a stage is an administrative correction.
-              canRevert: authority.isAdmin && sub.stage !== 'PENDING_LINE_MANAGER',
+              canRevert:
+                authority.isAdmin &&
+                sub.submissionStatus !== 'DRAFT' &&
+                sub.stage !== 'PENDING_LINE_MANAGER',
               // An admin may correct any KPI at any stage; everyone else only
               // while it is theirs to act on.
               canEdit:

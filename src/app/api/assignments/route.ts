@@ -108,7 +108,12 @@ const createSchema = z.object({
   weight: z.number().min(0).max(100),
   frequency: z.string().max(50).optional(),
   formOfSubmission: z.string().max(500).optional(),
+  // Which months this KPI is due in. effectiveFrom defaults to the start of
+  // the year (due all year, as it always was); effectiveTo left out means
+  // "until further notice". getDueAssignments() already filters on both, so
+  // a KPI needed for one month only is from/to inside that same month.
   effectiveFrom: z.string().optional(),
+  effectiveTo: z.string().optional(),
 });
 
 /**
@@ -174,6 +179,7 @@ export const POST = wrap(async (req: NextRequest) => {
       frequency: body.frequency || kpi.frequency,
       formOfSubmission: body.formOfSubmission || kpi.formOfSubmission,
       effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : new Date(Date.UTC(body.year, 0, 1)),
+      effectiveTo: body.effectiveTo ? new Date(body.effectiveTo) : null,
     },
   });
   await logAudit(db, {

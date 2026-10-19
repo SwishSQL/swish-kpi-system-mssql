@@ -5,6 +5,25 @@ import { api, fmt } from '@/lib/clientApi';
 import { useApp } from '@/components/AppContext';
 import BulkUpload from '@/components/admin/BulkUpload';
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/** "Mar — Jun", "Mar onwards", "Oct only", or "All year". */
+function monthRange(a: any): string {
+  const short = (d: string) => MONTHS[new Date(d).getUTCMonth()].slice(0, 3);
+  const from = a.effectiveFrom ? new Date(a.effectiveFrom) : null;
+  const to = a.effectiveTo ? new Date(a.effectiveTo) : null;
+  const startsAtYear = from ? from.getUTCMonth() === 0 : true;
+  if (startsAtYear && !to) return 'All year';
+  if (!from) return to ? `Until ${short(a.effectiveTo)}` : 'All year';
+  if (!to) return `${short(a.effectiveFrom)} onwards`;
+  const a1 = short(a.effectiveFrom);
+  const b1 = short(a.effectiveTo);
+  return a1 === b1 ? `${a1} only` : `${a1} — ${b1}`;
+}
+
 export default function AssignmentsTab() {
   const { departments } = useApp();
   const [year, setYear] = useState(new Date().getFullYear());
@@ -27,6 +46,10 @@ export default function AssignmentsTab() {
   const [picked, setPicked] = useState<Record<string, { target: string; threshold: string; weight: string }>>({});
   const [pickerQ, setPickerQ] = useState('');
   const [frequency, setFrequency] = useState(''); // '' = keep each KPI's own
+  // Which months the KPI is due in, as 1-12. '' = the whole year, which is how
+  // assigning has always behaved. Same month in both = due that month only.
+  const [fromMonth, setFromMonth] = useState('');
+  const [toMonth, setToMonth] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [edit, setEdit] = useState<any>(null);
   const [deleting, setDeleting] = useState<any>(null);
@@ -139,6 +162,10 @@ export default function AssignmentsTab() {
       setMsg('Pick at least one KPI first.');
       return;
     }
+    if (fromMonth && toMonth && Number(toMonth) < Number(fromMonth)) {
+      setMsg(`"Due until" is before "Due from" — nothing would ever be due. Pick ${MONTHS[Number(fromMonth) - 1]} or later.`);
+      return;
+    }
     setAssigning(true);
     setMsg('');
     const done: string[] = [];
@@ -157,6 +184,14 @@ export default function AssignmentsTab() {
             threshold: Number(v.threshold || v.target),
             weight: Number(v.weight),
             ...(frequency ? { frequency } : {}),
+            // First day of the "from" month, last day of the "to" month, so
+            // the whole of both months counts as due.
+            ...(fromMonth
+              ? { effectiveFrom: new Date(Date.UTC(year, Number(fromMonth) - 1, 1)).toISOString() }
+              : {}),
+            ...(toMonth
+              ? { effectiveTo: new Date(Date.UTC(year, Number(toMonth), 0, 23, 59, 59)).toISOString() }
+              : {}),
           },
         });
         done.push(k?.kpiCode ?? id);
@@ -186,6 +221,8 @@ export default function AssignmentsTab() {
       setEmployeeId('');
       setPickerQ('');
       setFrequency('');
+      setFromMonth('');
+      setToMonth('');
     }
     load();
   }
@@ -276,6 +313,20 @@ export default function AssignmentsTab() {
               <select className="input" value={frequency} onChange={(e) => setFrequency(e.target.value)}>
                 <option value="">Each KPI&apos;s own</option>
                 {['Monthly', 'Quarterly', 'Semi-Annual', 'Annual'].map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Due from</label>
+              <select className="input" value={fromMonth} onChange={(e) => setFromMonth(e.target.value)}>
+                <option value="">Start of {year}</option>
+                {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Due until</label>
+              <select className="input" value={toMonth} onChange={(e) => setToMonth(e.target.value)}>
+                <option value="">End of {year}</option>
+                {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
               </select>
             </div>
             <div className="text-[11.5px] text-slate-400 pb-2">
@@ -420,6 +471,7 @@ export default function AssignmentsTab() {
               <th className="table-th">Wt%</th>
               <th className="table-th">Total Wt</th>
               <th className="table-th">Freq</th>
+              <th className="table-th">Months</th>
               <th className="table-th">Status</th>
               {canReviewEdits && <th className="table-th"></th>}
               {canManage && <th className="table-th"></th>}
@@ -450,6 +502,7 @@ export default function AssignmentsTab() {
                   </span>
                 </td>
                 <td className="table-td text-xs">{a.frequency}</td>
+                <td className="table-td text-xs whitespace-nowrap">{monthRange(a)}</td>
                 <td className="table-td">
                   <span className={`badge ${a.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
                     {a.isActive ? 'Active' : 'Inactive'}
