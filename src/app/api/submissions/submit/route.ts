@@ -146,6 +146,19 @@ export const POST = wrap(async (req: NextRequest) => {
   const belowThresholdCodes: string[] = [];
   const isUpdate = existingSubs.some((s) => s.submissionStatus !== 'DRAFT');
 
+  // Where this month enters the approval chain. A manager who keys the numbers
+  // in has effectively reviewed them already, so their own level is skipped.
+  // It has to land on every KPI row as well as on the month: approval lives on
+  // the individual KPI, and a row left on its default PENDING_LINE_MANAGER
+  // while the month said "awaiting compliance" made the month-level button
+  // offer an approval the rows could not take - it took two clicks to get
+  // through.
+  const stage = entryStage({
+    submitterLevels: authority.levels,
+    hasLineManager: !!profile.directManagerEmployeeId,
+    hasDepartmentManager: !!profile.department?.departmentManagerEmployeeId,
+  });
+
   await db.$transaction(async (tx) => {
     for (const a of dueAssignments) {
       const entry = entriesByAssignment.get(a.id)!;
@@ -182,6 +195,8 @@ export const POST = wrap(async (req: NextRequest) => {
             calculatedScore: score,
             weightedScore: weighted,
             submissionStatus: existing.submissionStatus === 'DRAFT' ? 'SUBMITTED' : 'UPDATED',
+            // A fresh set of numbers needs fresh sign-offs - same as the month.
+            stage,
             performanceStatus: perf,
             comment: entry.comment ?? existing.comment,
             submittedByUserId: ctx.user.id,
@@ -202,6 +217,7 @@ export const POST = wrap(async (req: NextRequest) => {
             calculatedScore: score,
             weightedScore: weighted,
             submissionStatus: 'SUBMITTED',
+            stage,
             performanceStatus: perf,
             comment: entry.comment ?? '',
             submittedByUserId: ctx.user.id,
@@ -214,11 +230,6 @@ export const POST = wrap(async (req: NextRequest) => {
     }
 
     // Open (or re-open) the approval chain for this employee-month.
-    const stage = entryStage({
-      submitterLevels: authority.levels,
-      hasLineManager: !!profile.directManagerEmployeeId,
-      hasDepartmentManager: !!profile.department?.departmentManagerEmployeeId,
-    });
     const approval = await tx.submissionApproval.upsert({
       where: { employeeProfileId_submissionMonth: { employeeProfileId: profile.id, submissionMonth: body.month } },
       create: {
