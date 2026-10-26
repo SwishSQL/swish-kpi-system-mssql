@@ -152,19 +152,27 @@ export const POST = wrap(async (req: NextRequest) => {
     throw new ApiError(409, `${kpi.kpiCode} was rejected and cannot be assigned.`);
   }
 
+  // A second assignment of the same KPI is only a duplicate if their months
+  // overlap - Jan-Jun and Jul-Dec of one KPI are fine, but any month covered
+  // twice would be due twice and count its weight twice. This used to look only
+  // for an open-ended one (effectiveTo null), which a month-limited assignment
+  // slipped straight past.
+  const newFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : new Date(Date.UTC(body.year, 0, 1));
+  const newTo = body.effectiveTo ? new Date(body.effectiveTo) : null;
   const existing = await db.kpiAssignment.findFirst({
     where: {
       employeeProfileId: employee.id,
       kpiId: kpi.id,
       year: body.year,
       isActive: true,
-      effectiveTo: null,
+      ...(newTo ? { effectiveFrom: { lte: newTo } } : {}),
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: newFrom } }],
     },
   });
   if (existing) {
     throw new ApiError(
       409,
-      `An active ${body.year} assignment of ${kpi.kpiCode} for this employee already exists. Edit it instead of creating a duplicate.`
+      `An active ${body.year} assignment of ${kpi.kpiCode} for this employee already covers some of those months. Edit it instead of creating a duplicate.`
     );
   }
 

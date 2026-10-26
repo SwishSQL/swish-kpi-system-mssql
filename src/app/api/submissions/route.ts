@@ -216,19 +216,6 @@ export const GET = wrap(async (req: NextRequest) => {
   ]);
   const approvalByProfile = new Map(approvals.map((a) => [a.employeeProfileId, a]));
 
-  // Weights are a property of the yearly plan, not of the month on screen.
-  const yearAssignments = await db.kpiAssignment.findMany({
-    where: { year: viewedYear, isActive: true, employeeProfileId: { in: profileIds } },
-    select: { employeeProfileId: true, weight: true },
-  });
-  const yearlyWeightByProfile = new Map<string, number[]>();
-  for (const a of yearAssignments) {
-    yearlyWeightByProfile.set(a.employeeProfileId, [
-      ...(yearlyWeightByProfile.get(a.employeeProfileId) ?? []),
-      a.weight,
-    ]);
-  }
-
   // Read the reporting picture once: judging authority per row re-read every
   // active profile each time, which is most of what made this screen slow.
   const authorityContext = await loadAuthorityContext();
@@ -337,13 +324,20 @@ export const GET = wrap(async (req: NextRequest) => {
       }))
     );
 
-    // Weights are set across the whole year, so they are checked against the
-    // year's assignments. Judging them by the month on screen flagged everyone
-    // holding a quarterly KPI, whose weight is simply not due that month.
-    const yearWeights = yearlyWeightByProfile.get(pid) ?? [];
-    const { totalWeight, weightsValid } = employeeFinalScore(
-      yearWeights.map((weight) => ({ score: 0, weight }))
-    );
+    // The weights that must total 100 are the ones that score THIS month - the
+    // rows on the card, which is exactly what finalScore adds up. This used to
+    // sum every active assignment in the year, which was right while frequency
+    // decided which months a KPI was due in. Now that an assignment can be
+    // limited to certain months (and a KPI can be inactive, pending approval or
+    // past its end date), the year's total includes weights that are not on the
+    // screen and not in this month's score, and a card showing 30+40+30 read
+    // "Weights 130%" with nothing visible to account for the extra 30.
+    // Someone with nothing due (on vacation, or no KPIs this month) has no
+    // weights to judge, so no warning rather than "0%".
+    const { totalWeight, weightsValid } =
+      rows.length === 0
+        ? { totalWeight: 0, weightsValid: true }
+        : employeeFinalScore(rows.map((r) => ({ score: 0, weight: r.weight })));
 
     employees.push({
       profile: {

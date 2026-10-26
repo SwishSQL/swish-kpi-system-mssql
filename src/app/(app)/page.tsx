@@ -960,7 +960,7 @@ function EmployeeCard({
                 {!emp.weightsValid && (
                   <span
                     className="badge bg-amber-100 text-amber-700"
-                    title={`This employee's ${new Date(month + '-01').getFullYear()} KPI weights add up to ${emp.totalWeight}% instead of 100%, so the yearly score cannot reach 100%. Fix the weights under Admin → Assignments.`}
+                    title={`The ${total} KPI${total === 1 ? '' : 's'} due in ${month} add up to ${emp.totalWeight}% instead of 100%, so the score for this month cannot come out right. Fix the weights under Admin → Assignments.`}
                   >
                     ⚠ Weights {emp.totalWeight}%
                   </span>
