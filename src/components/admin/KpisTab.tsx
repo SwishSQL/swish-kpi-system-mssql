@@ -134,10 +134,13 @@ export default function KpisTab() {
         const { id, kpiCode, ...patch } = body;
         await api(`/api/kpis/${form.id}`, { method: 'PATCH', body: patch });
       } else {
-        const res = await api('/api/kpis', { body });
-        if (res.approvalStatus === 'PENDING') {
-          setMsg(`✔ ${body.kpiCode} submitted and awaiting approval from Compliance or an Admin.`);
-        }
+        const { kpiCode: _unused, ...createBody } = body;
+        const res = await api('/api/kpis', { body: createBody });
+        setMsg(
+          res.approvalStatus === 'PENDING'
+            ? `✔ ${res.kpiCode} submitted and awaiting approval from Compliance or an Admin.`
+            : `✔ ${res.kpiCode} created.`
+        );
       }
       setForm(null);
       load();
@@ -290,7 +293,14 @@ export default function KpisTab() {
               until Compliance or an Admin approves it.
             </p>
           )}
-          <div><label className="label">KPI Code *</label><input className="input w-full" required disabled={!!form.id} value={form.kpiCode} onChange={(e) => setForm({ ...form, kpiCode: e.target.value })} /></div>
+          {/* The code is assigned automatically (highest number + 1), so there is
+              nothing to type: two people picking one by hand is what collided. */}
+          <div>
+            <label className="label">KPI Code</label>
+            <div className="input w-full bg-slate-50 text-slate-500 font-mono flex items-center">
+              {form.id ? form.kpiCode : 'Assigned automatically'}
+            </div>
+          </div>
           <div className="sm:col-span-1 lg:col-span-3"><label className="label">KPI Name *</label><input className="input w-full" required value={form.kpiName} onChange={(e) => setForm({ ...form, kpiName: e.target.value })} /></div>
           <div className="sm:col-span-2"><label className="label">Description</label><input className="input w-full" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
           <div className="sm:col-span-2"><label className="label">Calculation Method</label><input className="input w-full" value={form.calculationMethod} onChange={(e) => setForm({ ...form, calculationMethod: e.target.value })} /></div>

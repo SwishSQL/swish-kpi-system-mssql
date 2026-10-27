@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { wrap, getCtx, ApiError } from '@/lib/api';
 import { logAudit } from '@/lib/audit';
+import { createKpiWithNextCode } from '@/lib/kpiCode';
 import { notifyUsers, userIdsWithPermission } from '@/lib/notify';
 
 export const dynamic = 'force-dynamic';
@@ -96,8 +97,9 @@ export const GET = wrap(async (req: NextRequest) => {
   });
 });
 
+// No kpiCode: it is assigned here (see nextKpiCode), never typed by the caller.
+// A code sent anyway is simply dropped by the parse.
 const kpiSchema = z.object({
-  kpiCode: z.string().min(1).max(60),
   kpiName: z.string().min(1).max(300),
   description: z.string().max(3000).optional(),
   calculationMethod: z.string().max(2000).optional(),
@@ -138,34 +140,28 @@ export const POST = wrap(async (req: NextRequest) => {
     }
   }
 
-  const dup = await db.kpi.findUnique({ where: { kpiCode: body.kpiCode.trim() } });
-  if (dup) throw new ApiError(409, 'A KPI with this code already exists.');
-
-  const kpi = await db.kpi.create({
-    data: {
-      kpiCode: body.kpiCode.trim(),
-      kpiName: body.kpiName.trim(),
-      description: body.description ?? '',
-      calculationMethod: body.calculationMethod ?? '',
-      varianceIndicator: body.varianceIndicator,
-      matrixType: body.matrixType,
-      defaultTarget: body.defaultTarget ?? null,
-      targetText: body.targetText ?? '',
-      defaultThreshold: body.defaultThreshold ?? null,
-      defaultWeight: body.defaultWeight ?? null,
-      frequency: body.frequency ?? 'Monthly',
-      responsibleDepartmentId: body.responsibleDepartmentId ?? null,
-      formOfSubmission: body.formOfSubmission ?? '',
-      approvalStatus: canPropose ? 'PENDING' : 'APPROVED',
-      createdByUserId: ctx.user.id,
-    },
+  const kpi = await createKpiWithNextCode({
+    kpiName: body.kpiName.trim(),
+    description: body.description ?? '',
+    calculationMethod: body.calculationMethod ?? '',
+    varianceIndicator: body.varianceIndicator,
+    matrixType: body.matrixType,
+    defaultTarget: body.defaultTarget ?? null,
+    targetText: body.targetText ?? '',
+    defaultThreshold: body.defaultThreshold ?? null,
+    defaultWeight: body.defaultWeight ?? null,
+    frequency: body.frequency ?? 'Monthly',
+    responsibleDepartmentId: body.responsibleDepartmentId ?? null,
+    formOfSubmission: body.formOfSubmission ?? '',
+    approvalStatus: canPropose ? 'PENDING' : 'APPROVED',
+    createdByUserId: ctx.user.id,
   });
   await logAudit(db, {
     userId: ctx.user.id,
     action: 'KPI_CREATED',
     entityType: 'Kpi',
     entityId: kpi.id,
-    newValues: { ...body, approvalStatus: kpi.approvalStatus },
+    newValues: { ...body, kpiCode: kpi.kpiCode, approvalStatus: kpi.approvalStatus },
     ipAddress: ctx.ip,
     userAgent: ctx.ua,
   });
@@ -182,5 +178,5 @@ export const POST = wrap(async (req: NextRequest) => {
     });
   }
 
-  return NextResponse.json({ ok: true, id: kpi.id, approvalStatus: kpi.approvalStatus });
+  return NextResponse.json({ ok: true, id: kpi.id, kpiCode: kpi.kpiCode, approvalStatus: kpi.approvalStatus });
 });
