@@ -52,6 +52,10 @@ export default function AssignmentsTab() {
   const [toMonth, setToMonth] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [edit, setEdit] = useState<any>(null);
+  // Shown inside the dialog: the page-level message sits behind the dimmed
+  // overlay, so a failed save looked like "Save does nothing".
+  const [editError, setEditError] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
   const [deleting, setDeleting] = useState<any>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -258,6 +262,8 @@ export default function AssignmentsTab() {
 
   async function saveEdit(e: React.FormEvent) {
     e.preventDefault();
+    setEditError('');
+    setEditSaving(true);
     try {
       await api(`/api/assignments/${edit.id}`, {
         method: 'PATCH',
@@ -266,7 +272,9 @@ export default function AssignmentsTab() {
       setEdit(null);
       load();
     } catch (err: any) {
-      setMsg(err.message);
+      setEditError(err.message || 'The server did not accept this change.');
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -523,7 +531,7 @@ export default function AssignmentsTab() {
                 )}
                 {canManage && (
                   <td className="table-td whitespace-nowrap">
-                    <button className="btn-secondary btn-xs mr-1" onClick={() => setEdit({ ...a })}>Edit</button>
+                    <button className="btn-secondary btn-xs mr-1" onClick={() => { setEditError(''); setEdit({ ...a }); }}>Edit</button>
                     <button
                       className="btn-xs text-red-600 hover:text-red-700 hover:underline mr-1"
                       title="Remove this KPI from this employee"
@@ -549,15 +557,20 @@ export default function AssignmentsTab() {
       </div>
 
       {edit && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setEdit(null)}>
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => { if (!editSaving) { setEdit(null); setEditError(''); } }}>
           <form onSubmit={saveEdit} className="card w-full sm:max-w-sm p-5 space-y-3 rounded-b-none sm:rounded-lg" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-bold text-slate-800">{edit.kpiCode} — {edit.employeeName}</h3>
             <div><label className="label">Target</label><input className="input w-full" type="number" step="any" value={edit.target} onChange={(e) => setEdit({ ...edit, target: e.target.value })} /></div>
             <div><label className="label">Threshold</label><input className="input w-full" type="number" step="any" value={edit.threshold} onChange={(e) => setEdit({ ...edit, threshold: e.target.value })} /></div>
             <div><label className="label">Weight %</label><input className="input w-full" type="number" step="any" value={edit.weight} onChange={(e) => setEdit({ ...edit, weight: e.target.value })} /></div>
+            {editError && (
+              <div role="alert" className="rounded-md bg-red-50 border border-red-200 text-red-700 text-[13px] px-3 py-2">
+                <b>Not saved.</b> {editError}
+              </div>
+            )}
             <div className="flex gap-2 justify-end">
-              <button type="button" className="btn-secondary" onClick={() => setEdit(null)}>Cancel</button>
-              <button className="btn-primary">Save</button>
+              <button type="button" className="btn-secondary" disabled={editSaving} onClick={() => { setEdit(null); setEditError(''); }}>Cancel</button>
+              <button className="btn-primary" disabled={editSaving}>{editSaving ? 'Saving…' : 'Save'}</button>
             </div>
           </form>
         </div>

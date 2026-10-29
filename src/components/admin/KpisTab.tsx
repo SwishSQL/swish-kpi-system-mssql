@@ -13,6 +13,17 @@ const EMPTY = {
   responsibleDepartmentId: '', formOfSubmission: '',
 };
 
+/** The form's text boxes as the API wants them: numbers as numbers, blanks as null. */
+function toPayload(f: any) {
+  return {
+    ...f,
+    defaultTarget: f.defaultTarget === '' || f.defaultTarget == null ? null : Number(f.defaultTarget),
+    defaultThreshold: f.defaultThreshold === '' || f.defaultThreshold == null ? null : Number(f.defaultThreshold),
+    defaultWeight: f.defaultWeight === '' || f.defaultWeight == null ? null : Number(f.defaultWeight),
+    responsibleDepartmentId: f.responsibleDepartmentId || null,
+  };
+}
+
 export default function KpisTab() {
   const { departments, can, me } = useApp();
   const [allRows, setAllRows] = useState<any[]>([]);
@@ -31,6 +42,15 @@ export default function KpisTab() {
   const [approvalFilter, setApprovalFilter] = useState('');
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState<any>(null); // null = closed, {id?} = editing/creating
+  // A save error has to appear INSIDE the dialog: the page-level message sits
+  // behind the dimmed overlay, so a failed save looked like "Save does nothing".
+  // What the edit dialog opened with, so a save can send only what changed.
+  const [formOriginal, setFormOriginal] = useState<any>(null);
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!form) setFormError('');
+  }, [form]);
   const [deleting, setDeleting] = useState<any>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -122,16 +142,25 @@ export default function KpisTab() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setMsg('');
-    const body = {
-      ...form,
-      defaultTarget: form.defaultTarget === '' ? null : Number(form.defaultTarget),
-      defaultThreshold: form.defaultThreshold === '' ? null : Number(form.defaultThreshold),
-      defaultWeight: form.defaultWeight === '' ? null : Number(form.defaultWeight),
-      responsibleDepartmentId: form.responsibleDepartmentId || null,
-    };
+    setFormError('');
+    setSaving(true);
+    const body = toPayload(form);
     try {
       if (form.id) {
-        const { id, kpiCode, ...patch } = body;
+        // Send only what was actually changed. The dialog used to send every
+        // field, so changing a weight was refused whenever some OTHER field -
+        // an imported description or "target as written" over its length limit,
+        // say - failed validation, and the person had no way to tell why.
+        const { id, kpiCode, ...all } = body;
+        const was: any = formOriginal ? toPayload(formOriginal) : {};
+        const patch: Record<string, unknown> = {};
+        for (const key of Object.keys(all)) {
+          if (!formOriginal || JSON.stringify((all as any)[key]) !== JSON.stringify(was[key])) patch[key] = (all as any)[key];
+        }
+        if (Object.keys(patch).length === 0) {
+          setForm(null);
+          return;
+        }
         await api(`/api/kpis/${form.id}`, { method: 'PATCH', body: patch });
       } else {
         const { kpiCode: _unused, ...createBody } = body;
@@ -145,7 +174,10 @@ export default function KpisTab() {
       setForm(null);
       load();
     } catch (err: any) {
-      setMsg(err.message);
+      // Stay in the dialog and say why, so the edit is not lost.
+      setFormError(err.message || 'The server did not accept this change.');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -277,7 +309,7 @@ export default function KpisTab() {
       {form && (
         <div
           className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-          onClick={() => setForm(null)}
+          onClick={() => !saving && setForm(null)}
         >
         <form
           onSubmit={save}
@@ -370,9 +402,19 @@ export default function KpisTab() {
             </select>
           </div>
           <div><label className="label">Form of Submission</label><input className="input w-full" value={form.formOfSubmission} onChange={(e) => setForm({ ...form, formOfSubmission: e.target.value })} /></div>
+          {formError && (
+            <div
+              role="alert"
+              className="sm:col-span-2 lg:col-span-4 rounded-md bg-red-50 border border-red-200 text-red-700 text-[13px] px-3 py-2"
+            >
+              <b>Not saved.</b> {formError}
+            </div>
+          )}
           <div className="sm:col-span-2 lg:col-span-4 flex gap-2">
-            <button className="btn-primary">{form.id ? 'Save Changes' : 'Create KPI'}</button>
-            <button type="button" className="btn-secondary" onClick={() => setForm(null)}>Cancel</button>
+            <button className="btn-primary" disabled={saving}>
+              {saving ? 'Saving…' : form.id ? 'Save Changes' : 'Create KPI'}
+            </button>
+            <button type="button" className="btn-secondary" disabled={saving} onClick={() => { setForm(null); setFormError(''); }}>Cancel</button>
           </div>
         </form>
         </div>
@@ -470,8 +512,8 @@ export default function KpisTab() {
                       (k.approvalStatus === 'APPROVED' && managedDepartmentIds.includes(k.responsibleDepartmentId))) && (
                       <button
                         className="btn-secondary btn-xs mr-1"
-                        onClick={() =>
-                          setForm({
+                        onClick={() => {
+                          const opened = {
                             id: k.id, kpiCode: k.kpiCode, kpiName: k.kpiName, description: k.description,
                             calculationMethod: k.calculationMethod, varianceIndicator: k.varianceIndicator,
                             matrixType: k.matrixType, defaultTarget: k.defaultTarget ?? '', targetText: k.targetText ?? '',
@@ -479,8 +521,10 @@ export default function KpisTab() {
                             defaultWeight: k.defaultWeight ?? '', frequency: k.frequency,
                             responsibleDepartmentId: k.responsibleDepartmentId ?? '',
                             formOfSubmission: k.formOfSubmission,
-                          })
-                        }
+                          };
+                          setFormOriginal(opened);
+                          setForm(opened);
+                        }}
                       >
                         Edit
                       </button>
